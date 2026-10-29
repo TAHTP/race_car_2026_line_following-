@@ -547,6 +547,14 @@ void handleBLECommand(String cmd) {
         return;
     }
 
+    if (cmd.startsWith("BASE:")) {
+        BASE = constrain(cmd.substring(5).toInt(), 30, 255);
+        char buf[30];
+        snprintf(buf, sizeof(buf), "LOG:BASE=%d", BASE);
+        bleSend(buf);
+        return;
+    }
+
 #if DEBUG_RAW
     if (cmd == "TEST") {
         testMode = !testMode;
