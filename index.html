@@ -329,6 +329,30 @@
     </div>
   </div>
 
+  <!-- Lap Timer Card -->
+  <div class="card" style="border: 1px solid #38bdf8; background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+      <div class="card-title" style="margin-bottom: 0; color: #38bdf8; font-weight: 700;">⏱️ ĐỒNG HỒ BẤM GIỜ VÒNG ĐUA (LAP TIMER)</div>
+      <button id="btnResetTimer" class="btn" style="padding: 3px 8px; font-size: 0.7rem; background: #334155;">Reset</button>
+    </div>
+    
+    <div style="text-align: center; padding: 10px 0;">
+      <div id="timerDisplay" style="font-family: monospace; font-size: 2.6rem; font-weight: 800; color: #22c55e; text-shadow: 0 0 15px rgba(34, 197, 94, 0.4); letter-spacing: 2px;">00:00.000</div>
+      <div id="timerStatus" style="font-size: 0.8rem; color: var(--text-dim); margin-top: 4px; font-weight: 600;">SẴN SÀNG</div>
+    </div>
+
+    <div class="stat-row" style="grid-template-columns: 1fr 1fr; margin-top: 4px;">
+      <div class="stat-box">
+        <div class="stat-label">VÒNG VỪA CHẠY (LAST LAP)</div>
+        <div id="lastLapDisplay" class="stat-val" style="font-size: 1.05rem; color: #f8fafc;">--:--.---</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">⭐ KỶ LỤC TỐT NHẤT (BEST LAP)</div>
+        <div id="bestLapDisplay" class="stat-val" style="font-size: 1.05rem; color: #f59e0b;">--:--.---</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Mode Control Buttons -->
   <div class="card">
     <div class="card-title">🕹️ CHỌN CHẾ ĐỘ HOẠT ĐỘNG</div>
@@ -546,18 +570,109 @@
           document.getElementById('inputTurnIn').value = parts[4];
           log("Đã cập nhật thông số từ robot: " + text);
         }
+      } else if (text.startsWith("LOG:RACE_FINISH:")) {
+        const finishSec = parseFloat(text.substring(16));
+        stopTimer(finishSec);
+        log("🏁 Robot về đích! Thời gian: " + finishSec.toFixed(3) + "s");
+      } else if (text === "LOG:AUTO_START") {
+        if (!isTimerRunning) startTimer();
+        log("Robot: " + text);
+      } else if (text === "LOG:MODE_MANUAL") {
+        if (isTimerRunning) stopTimer();
+        log("Robot: " + text);
       } else {
         log("Robot: " + text);
       }
     }
 
+    // Stopwatch / Lap Timer Logic
+    const timerDisplay = document.getElementById('timerDisplay');
+    const timerStatus = document.getElementById('timerStatus');
+    const lastLapDisplay = document.getElementById('lastLapDisplay');
+    const bestLapDisplay = document.getElementById('bestLapDisplay');
+    const btnResetTimer = document.getElementById('btnResetTimer');
+
+    let timerInterval = null;
+    let timerStartTime = 0;
+    let isTimerRunning = false;
+    let bestLapTime = parseFloat(localStorage.getItem('robot_best_lap')) || null;
+
+    if (bestLapTime) {
+      bestLapDisplay.textContent = formatTime(bestLapTime);
+    }
+
+    function formatTime(totalSeconds) {
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = Math.floor(totalSeconds % 60);
+      const ms = Math.floor((totalSeconds % 1) * 1000);
+      return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+    }
+
+    function startTimer() {
+      if (timerInterval) clearInterval(timerInterval);
+      timerStartTime = performance.now();
+      isTimerRunning = true;
+      timerStatus.textContent = "🏎️ ĐANG ĐUA...";
+      timerStatus.style.color = "#f59e0b";
+      timerDisplay.style.color = "#38bdf8";
+
+      timerInterval = setInterval(() => {
+        const elapsed = (performance.now() - timerStartTime) / 1000;
+        timerDisplay.textContent = formatTime(elapsed);
+      }, 33);
+    }
+
+    function stopTimer(finishSec = null) {
+      if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+      }
+      isTimerRunning = false;
+
+      if (finishSec !== null && !isNaN(finishSec)) {
+        timerDisplay.textContent = formatTime(finishSec);
+        timerDisplay.style.color = "#22c55e";
+        timerStatus.textContent = `🏁 VỀ ĐÍCH! (${finishSec.toFixed(3)}s)`;
+        timerStatus.style.color = "#22c55e";
+        lastLapDisplay.textContent = formatTime(finishSec);
+
+        if (!bestLapTime || finishSec < bestLapTime) {
+          bestLapTime = finishSec;
+          localStorage.setItem('robot_best_lap', finishSec);
+          bestLapDisplay.textContent = formatTime(finishSec);
+          bestLapDisplay.style.color = "#f59e0b";
+          log(`🎉 KỶ LỤC MỚI: ${finishSec.toFixed(3)}s!`);
+        }
+      } else {
+        timerStatus.textContent = "⏹ ĐÃ DỪNG";
+        timerStatus.style.color = "var(--text-dim)";
+      }
+    }
+
+    btnResetTimer.addEventListener('click', () => {
+      stopTimer();
+      timerDisplay.textContent = "00:00.000";
+      timerDisplay.style.color = "#22c55e";
+      timerStatus.textContent = "SẴN SÀNG";
+      timerStatus.style.color = "var(--text-dim)";
+    });
+
     // Event listeners
     btnConnect.addEventListener('click', connectBLE);
     btnDisconnect.addEventListener('click', disconnectBLE);
 
-    document.getElementById('btnCal').addEventListener('click', () => sendCommand("CAL"));
-    document.getElementById('btnAuto').addEventListener('click', () => sendCommand("AUTO"));
-    document.getElementById('btnManual').addEventListener('click', () => sendCommand("MANUAL"));
+    document.getElementById('btnCal').addEventListener('click', () => {
+      if (isTimerRunning) stopTimer();
+      sendCommand("CAL");
+    });
+    document.getElementById('btnAuto').addEventListener('click', () => {
+      startTimer();
+      sendCommand("AUTO");
+    });
+    document.getElementById('btnManual').addEventListener('click', () => {
+      if (isTimerRunning) stopTimer();
+      sendCommand("MANUAL");
+    });
 
     // Manual controls
     document.getElementById('btnFwd').addEventListener('click', () => sendCommand("FWD"));

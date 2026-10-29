@@ -347,7 +347,7 @@ int fullBlackFrames = 0;
 unsigned long gapStart = 0;
 
 // ================================================================
-// 6. TRẠNG THÁI
+// 6. TRẠNG THÁI & TIMER
 // ================================================================
 bool runLine = false;
 #if DEBUG_RAW
@@ -362,10 +362,14 @@ bool calibrating = false;
 unsigned long calEnd = 0;
 #define CAL_TIME 5000
 
-String currentModeName = "IDLE";
-String currentCaseName = "-";
+const char *currentModeName = "IDLE";
+const char *currentCaseName = "-";
 unsigned long lastStatusTime = 0;
 #define STATUS_INTERVAL 150
+
+// Hardware Timer bấm giờ vòng đua
+volatile uint64_t raceStartTime = 0;
+volatile bool raceRunning = false;
 
 // ================================================================
 // 7. ĐIỀU KHIỂN ĐỘNG CƠ
@@ -409,27 +413,42 @@ void sendStatus() {
         patStr[7 - i] = (currentPattern & (1 << i)) ? '1' : '0';
     patStr[8] = '\0';
 
+    float curLapTime = 0.0f;
+    if (raceRunning) {
+        curLapTime = (float)(esp_timer_get_time() - raceStartTime) / 1000000.0f;
+    }
+
     char buf[256];
     snprintf(buf, sizeof(buf),
              "{\"mode\":\"%s\",\"case\":\"%s\","
              "\"pos\":%u,\"pat\":\"%s\","
-             "\"spd\":%d,\"err\":%d,\"cal\":%d}",
-             currentModeName.c_str(), currentCaseName.c_str(), lastLinePos,
+             "\"spd\":%d,\"err\":%d,\"cal\":%d,\"time\":%.2f}",
+             currentModeName, currentCaseName, lastLinePos,
              patStr, speed_dk, lastError,
-             calibrating ? 2 : (calibrated ? 1 : 0));
+             calibrating ? 2 : (calibrated ? 1 : 0), curLapTime);
     pTxCharacteristic->setValue((uint8_t *)buf, strlen(buf));
     pTxCharacteristic->notify();
 }
 
-// Kết thúc line: phanh ghìm rồi thả trôi
+// Kết thúc line: phanh ghìm rồi thả trôi + chốt giờ hoàn thành
 void endLine() {
+    uint64_t finishTime = esp_timer_get_time();
     tb6612_short_brake();
-    delay(150);
+    vTaskDelay(pdMS_TO_TICKS(150));
     tb6612_coast();
     runLine = false;
     currentModeName = "IDLE";
     currentCaseName = "END_LINE";
-    bleSend("LOG:END_LINE");
+
+    if (raceRunning) {
+        raceRunning = false;
+        float elapsedSeconds = (float)(finishTime - raceStartTime) / 1000000.0f;
+        char lapMsg[64];
+        snprintf(lapMsg, sizeof(lapMsg), "LOG:RACE_FINISH:%.3f", elapsedSeconds);
+        bleSend(lapMsg);
+    } else {
+        bleSend("LOG:END_LINE");
+    }
 }
 
 // ================================================================
@@ -521,6 +540,7 @@ void handleBLECommand(String cmd) {
 
     if (cmd == "CAL") {
         runLine = false;
+        raceRunning = false;
         stopMotor();
         calibrated = false;
         calibrating = true;
@@ -578,11 +598,14 @@ void handleBLECommand(String cmd) {
         inFullBlack = false;
         currentModeName = "AUTO";
         currentCaseName = "PID_FOLLOW";
+        raceStartTime = esp_timer_get_time();
+        raceRunning = true;
         bleSend("LOG:AUTO_START");
         return;
     }
     if (cmd == "MANUAL") {
         runLine = false;
+        raceRunning = false;
         stopMotor();
         currentModeName = "MANUAL";
         currentCaseName = "IDLE";
@@ -623,12 +646,90 @@ class MyServerCallbacks : public BLEServerCallbacks {
         deviceConnected = false;
         stopMotor();
         runLine = false;
+        raceRunning = false;
         BLEDevice::startAdvertising();
     }
 };
 
 // ================================================================
-// 12. SETUP
+// 12. FREERTOS TASKS (TÁCH 2 CORE)
+// ================================================================
+
+// TASK 1 (Core 1): Chuyên xử lý Động cơ, Đọc Cảm biến & Thuật toán PID bám line
+void taskMotorPID(void *pvParameters) {
+    for (;;) {
+        if (calibrating) {
+            qtr.calibrate();
+            if (millis() >= calEnd) {
+                calibrating = false;
+                calibrated = true;
+                currentModeName = "IDLE";
+                currentCaseName = "-";
+                char bad[48] = "LOG:CAL_WARN mat:";
+                bool anyBad = false;
+                for (int c = 0; c < 8; c++) {
+                    if (!qtr.channelOk(c)) {
+                        char t[4];
+                        snprintf(t, sizeof(t), " %d", c + 1);
+                        strncat(bad, t, sizeof(bad) - strlen(bad) - 1);
+                        anyBad = true;
+                    }
+                }
+                if (anyBad)
+                    bleSend(bad);
+                qtr.saveCalibration();
+                bleSend("LOG:CAL_DONE");
+            }
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+
+        if (runLine) {
+            lineFollowPID();
+            vTaskDelay(pdMS_TO_TICKS(1)); // Nhường 1ms cho watchdog
+        } else {
+            if (calibrated)
+                docSensor();
+            else
+                currentPattern = 0;
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+}
+
+// TASK 2 (Core 0): Chuyên giao tiếp Bluetooth BLE & Telemetry
+void taskBLETelemetry(void *pvParameters) {
+    for (;;) {
+        if (!deviceConnected && oldDeviceConnected) {
+            vTaskDelay(pdMS_TO_TICKS(300));
+            BLEDevice::startAdvertising();
+            oldDeviceConnected = false;
+        }
+        if (deviceConnected && !oldDeviceConnected)
+            oldDeviceConnected = true;
+
+#if DEBUG_RAW
+        if (testMode && !calibrating && !runLine) {
+            docSensor();
+            if (deviceConnected && millis() - lastRawTime > 200) {
+                lastRawTime = millis();
+                char raw[64];
+                snprintf(raw, sizeof(raw), "RAW:%u,%u,%u,%u,%u,%u,%u,%u",
+                         sensorValues[0], sensorValues[1], sensorValues[2],
+                         sensorValues[3], sensorValues[4], sensorValues[5],
+                         sensorValues[6], sensorValues[7]);
+                bleSend(raw);
+            }
+        }
+#endif
+
+        sendStatus();
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+// ================================================================
+// 13. SETUP
 // ================================================================
 void setup() {
     Serial.begin(115200);
@@ -659,65 +760,36 @@ void setup() {
     }
     Serial.println("READY! Gui CAL de calibrate, sau do AUTO de chay");
     bleSend("LOG:ROBOT_READY");
+
+    // Khởi tạo FreeRTOS Task trên 2 Core độc lập:
+    // Core 1: Ưu tiên cao nhất cho PID & Động cơ (tránh giật lag)
+    xTaskCreatePinnedToCore(
+        taskMotorPID,
+        "TaskMotorPID",
+        4096,
+        NULL,
+        3,
+        NULL,
+        1
+    );
+
+    // Core 0: Xử lý truyền nhận BLE & Telemetry
+    xTaskCreatePinnedToCore(
+        taskBLETelemetry,
+        "TaskBLETelemetry",
+        4096,
+        NULL,
+        1,
+        NULL,
+        0
+    );
+
+    Serial.println(">> FreeRTOS Dual-Core Tasks Started! <<");
 }
 
 // ================================================================
-// 13. LOOP
+// 14. LOOP (Đã chuyển toàn bộ xử lý vào 2 Task FreeRTOS)
 // ================================================================
 void loop() {
-    if (!deviceConnected && oldDeviceConnected) {
-        delay(300);
-        BLEDevice::startAdvertising();
-        oldDeviceConnected = false;
-    }
-    if (deviceConnected && !oldDeviceConnected)
-        oldDeviceConnected = true;
-
-    if (calibrating) {
-        qtr.calibrate();
-        if (millis() >= calEnd) {
-            calibrating = false;
-            calibrated = true;
-            currentModeName = "IDLE";
-            currentCaseName = "-";
-            char bad[48] = "LOG:CAL_WARN mat:";
-            bool anyBad = false;
-            for (int c = 0; c < 8; c++) {
-                if (!qtr.channelOk(c)) {
-                    char t[4];
-                    snprintf(t, sizeof(t), " %d", c + 1);
-                    strncat(bad, t, sizeof(bad) - strlen(bad) - 1);
-                    anyBad = true;
-                }
-            }
-            if (anyBad)
-                bleSend(bad);
-            qtr.saveCalibration();
-            bleSend("LOG:CAL_DONE");
-        }
-    }
-
-    if (runLine)
-        lineFollowPID();
-    else if (calibrated && !calibrating)
-        docSensor();
-    else
-        currentPattern = 0;
-
-#if DEBUG_RAW
-    if (testMode && !calibrating && !runLine) {
-        docSensor();
-        if (deviceConnected && millis() - lastRawTime > 200) {
-            lastRawTime = millis();
-            char raw[64];
-            snprintf(raw, sizeof(raw), "RAW:%u,%u,%u,%u,%u,%u,%u,%u",
-                     sensorValues[0], sensorValues[1], sensorValues[2],
-                     sensorValues[3], sensorValues[4], sensorValues[5],
-                     sensorValues[6], sensorValues[7]);
-            bleSend(raw);
-        }
-    }
-#endif
-
-    sendStatus();
+    vTaskDelay(pdMS_TO_TICKS(1000));
 }
