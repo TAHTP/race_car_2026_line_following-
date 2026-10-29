@@ -361,19 +361,6 @@
       <button id="btnAuto" class="btn btn-success">▶ CHẠY AUTO</button>
       <button id="btnManual" class="btn btn-danger">⏹ DỪNG / TAY</button>
     </div>
-
-    <!-- Tốc độ chạy Auto (Base Speed) -->
-    <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-        <label style="font-size: 0.8rem; color: var(--text-dim); font-weight: 600;">⚡ TỐC ĐỘ CHẠY TỰ ĐỘNG (BASE SPEED):</label>
-        <span id="txtBaseSpeed" style="font-size: 1.15rem; font-weight: 800; color: #22c55e;">150</span>
-      </div>
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <button id="btnBaseMinus" class="btn" style="padding: 6px 14px; font-size: 0.85rem; background: #334155; font-weight: 700;">-10</button>
-        <input type="range" id="sliderBaseSpeed" min="40" max="255" value="150" style="flex: 1;">
-        <button id="btnBasePlus" class="btn" style="padding: 6px 14px; font-size: 0.85rem; background: #334155; font-weight: 700;">+10</button>
-      </div>
-    </div>
   </div>
 
   <!-- Manual D-Pad -->
@@ -579,8 +566,6 @@
           document.getElementById('inputKp').value = parts[0];
           document.getElementById('inputKd').value = parts[1];
           document.getElementById('inputBase').value = parts[2];
-          document.getElementById('sliderBaseSpeed').value = parts[2];
-          document.getElementById('txtBaseSpeed').textContent = parts[2];
           document.getElementById('inputTurnOut').value = parts[3];
           document.getElementById('inputTurnIn').value = parts[4];
           log("Đã cập nhật thông số từ robot: " + text);
@@ -696,34 +681,6 @@
     document.getElementById('btnRight').addEventListener('click', () => sendCommand("RGT"));
     document.getElementById('btnStop').addEventListener('click', () => sendCommand("STP"));
 
-    // Base Speed (Tốc độ chạy Auto) tuning
-    const sliderBaseSpeed = document.getElementById('sliderBaseSpeed');
-    const txtBaseSpeed = document.getElementById('txtBaseSpeed');
-    const inputBase = document.getElementById('inputBase');
-
-    function updateBaseSpeed(val) {
-      val = Math.max(40, Math.min(255, parseInt(val) || 150));
-      sliderBaseSpeed.value = val;
-      txtBaseSpeed.textContent = val;
-      inputBase.value = val;
-      sendCommand("BASE:" + val);
-    }
-
-    sliderBaseSpeed.addEventListener('input', (e) => {
-      txtBaseSpeed.textContent = e.target.value;
-      inputBase.value = e.target.value;
-    });
-    sliderBaseSpeed.addEventListener('change', (e) => {
-      updateBaseSpeed(e.target.value);
-    });
-
-    document.getElementById('btnBaseMinus').addEventListener('click', () => {
-      updateBaseSpeed(parseInt(sliderBaseSpeed.value) - 10);
-    });
-    document.getElementById('btnBasePlus').addEventListener('click', () => {
-      updateBaseSpeed(parseInt(sliderBaseSpeed.value) + 10);
-    });
-
     // Speed slider
     const sliderSpeed = document.getElementById('sliderSpeed');
     const txtSpeed = document.getElementById('txtSpeed');
@@ -739,8 +696,6 @@
       const kp = document.getElementById('inputKp').value;
       const kd = document.getElementById('inputKd').value;
       const base = document.getElementById('inputBase').value;
-      sliderBaseSpeed.value = base;
-      txtBaseSpeed.textContent = base;
       sendCommand(`PID:${kp},${kd},${base}`);
     });
 

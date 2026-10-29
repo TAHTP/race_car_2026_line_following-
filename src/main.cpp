@@ -457,8 +457,6 @@ void endLine() {
 void lineFollowPID() {
     int blackCount = docSensor();
 
-    // ĐÃ VÔ HIỆU HÓA DỪNG XE KHI BỐC ĐẦU (8 MẮT ĐỌC ĐEN) ĐỂ TEST TỐC ĐỘ THOẢI MÁI
-    /*
     if (currentPattern == 0b11111111) {
         fullBlackFrames++;
         if (fullBlackFrames >= END_CONFIRM && !inFullBlack) {
@@ -473,7 +471,6 @@ void lineFollowPID() {
         fullBlackFrames = 0;
         inFullBlack = false;
     }
-    */
     if (blackCount != 0)
         inGap = false;
 
@@ -527,14 +524,6 @@ void handleBLECommand(String cmd) {
         speed_dk = constrain(cmd.substring(4).toInt(), 30, 255);
         char buf[30];
         snprintf(buf, sizeof(buf), "LOG:SPD=%d", speed_dk);
-        bleSend(buf);
-        return;
-    }
-
-    if (cmd.startsWith("BASE:")) {
-        BASE = constrain(cmd.substring(5).toInt(), 30, 255);
-        char buf[30];
-        snprintf(buf, sizeof(buf), "LOG:BASE=%d", BASE);
         bleSend(buf);
         return;
     }
