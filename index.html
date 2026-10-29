@@ -432,23 +432,7 @@
         <input type="number" id="inputTurnIn" step="5" value="90">
       </div>
     </div>
-    <button id="btnSetTurn" class="btn btn-primary" style="width: 100%; margin-bottom: 10px;">Cập Nhật Tốc Độ Cua 90°</button>
-
-    <!-- Launch Control Settings -->
-    <div style="border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px;">
-      <div class="card-title" style="margin-bottom: 6px; color: #f59e0b;">🚀 LAUNCH CONTROL (CHỐNG BỐC ĐẦU)</div>
-      <div class="grid-2">
-        <div class="form-group">
-          <label>Tốc độ mồi đề-pa (Start PWM)</label>
-          <input type="number" id="inputLaunchSpd" step="5" value="40">
-        </div>
-        <div class="form-group">
-          <label>Thời gian vuốt ga (ms)</label>
-          <input type="number" id="inputLaunchMs" step="25" value="250">
-        </div>
-      </div>
-      <button id="btnSetLaunch" class="btn btn-warning" style="width: 100%;">Cập Nhật Launch Control</button>
-    </div>
+    <button id="btnSetTurn" class="btn btn-primary" style="width: 100%;">Cập Nhật Tốc Độ Cua 90°</button>
   </div>
 
   <!-- Console Log -->
@@ -740,7 +724,7 @@
       updateBaseSpeed(parseInt(sliderBaseSpeed.value) + 10);
     });
 
-    // Speed slider (Manual)
+    // Speed slider
     const sliderSpeed = document.getElementById('sliderSpeed');
     const txtSpeed = document.getElementById('txtSpeed');
     sliderSpeed.addEventListener('input', (e) => {
@@ -765,13 +749,6 @@
       const outSpd = document.getElementById('inputTurnOut').value;
       const inSpd = document.getElementById('inputTurnIn').value;
       sendCommand(`TURN:${outSpd},${inSpd}`);
-    });
-
-    // Launch Control tuning
-    document.getElementById('btnSetLaunch').addEventListener('click', () => {
-      const spd = document.getElementById('inputLaunchSpd').value;
-      const ms = document.getElementById('inputLaunchMs').value;
-      sendCommand(`LAUNCH:${spd},${ms}`);
     });
 
     document.getElementById('btnGetPid').addEventListener('click', () => sendCommand("GETPID"));

@@ -339,8 +339,7 @@ const int BOOST = 20, BOOST_THRESHOLD = 150;
 #define GAP_MAX_COUNT 5
 #define GAP_ERR_MAX 1500
 #define END_BLACK_COUNT 1
-#define END_CONFIRM 15                     // Lọc chống nhiễu: 15 chu kỳ liên tiếp mới xác nhận vạch đích
-#define MIN_RACE_TIME_FOR_END_MS 1500      // Khóa an toàn 1.5s đầu: Không cho phép kích hoạt dừng xe do bốc đầu
+#define END_CONFIRM 3
 int cnt = 0;
 int cntDen = 0;
 bool inGap = false, inFullBlack = false;
@@ -348,7 +347,7 @@ int fullBlackFrames = 0;
 unsigned long gapStart = 0;
 
 // ================================================================
-// 6. TRẠNG THÁI, TIMER & LAUNCH CONTROL
+// 6. TRẠNG THÁI & TIMER
 // ================================================================
 bool runLine = false;
 #if DEBUG_RAW
@@ -372,48 +371,14 @@ unsigned long lastStatusTime = 0;
 volatile uint64_t raceStartTime = 0;
 volatile bool raceRunning = false;
 
-// Launch Control: Tăng tốc tuyến tính chống bốc đầu khi đề-pa
-int launchStartSpeed = 40;        // Tốc độ mồi lúc xuất phát (êm ái, bám đường)
-int launchRampMs = 250;           // Thời gian vuốt ga lên 100% BASE (mili-giây)
-volatile unsigned long launchStartTime = 0;
-volatile bool isLaunching = false;
-
 // ================================================================
-// 7. ĐIỀU KHIỂN ĐỘNG CƠ (KÈM BỘ LÀM MƯỢT GIA TỐC SLEW RATE LIMITER)
+// 7. ĐIỀU KHIỂN ĐỘNG CƠ
 // ================================================================
-#define MAX_ACCEL_STEP 8 // Giới hạn tăng tốc tối đa 8 PWM / chu kỳ (chống giật bốc đầu)
-
-static int currentL = 0;
-static int currentR = 0;
-
 void move(int left, int right) {
-    left = constrain(left, -255, 255);
-    right = constrain(right, -255, 255);
-
-    // Mượt gia tốc bánh trái (tăng ga êm, nhả ga phanh nhanh)
-    if (left > currentL + MAX_ACCEL_STEP)
-        currentL += MAX_ACCEL_STEP;
-    else if (left < currentL - (MAX_ACCEL_STEP * 2))
-        currentL -= (MAX_ACCEL_STEP * 2);
-    else
-        currentL = left;
-
-    // Mượt gia tốc bánh phải
-    if (right > currentR + MAX_ACCEL_STEP)
-        currentR += MAX_ACCEL_STEP;
-    else if (right < currentR - (MAX_ACCEL_STEP * 2))
-        currentR -= (MAX_ACCEL_STEP * 2);
-    else
-        currentR = right;
-
-    speed_run(currentL, currentR);
+    speed_run(constrain(left, -255, 255), constrain(right, -255, 255));
 }
 
-void stopMotor() {
-    currentL = 0;
-    currentR = 0;
-    tb6612_coast();
-}
+void stopMotor() { tb6612_coast(); }
 
 void movePID(int base, int adjust) {
     int L = base + adjust, R = base - adjust;
@@ -472,7 +437,6 @@ void endLine() {
     vTaskDelay(pdMS_TO_TICKS(150));
     tb6612_coast();
     runLine = false;
-    isLaunching = false;
     currentModeName = "IDLE";
     currentCaseName = "END_LINE";
 
@@ -493,28 +457,9 @@ void endLine() {
 void lineFollowPID() {
     int blackCount = docSensor();
 
-    // Launch Control: Tăng tốc tuyến tính từ launchStartSpeed lên BASE trong launchRampMs
-    int effectiveBase = BASE;
-    if (isLaunching) {
-        unsigned long elapsed = millis() - launchStartTime;
-        if (elapsed < (unsigned long)launchRampMs) {
-            effectiveBase = launchStartSpeed + (int)(((long)(BASE - launchStartSpeed) * elapsed) / launchRampMs);
-        } else {
-            isLaunching = false;
-            effectiveBase = BASE;
-        }
-    }
-
+    // ĐÃ VÔ HIỆU HÓA DỪNG XE KHI BỐC ĐẦU (8 MẮT ĐỌC ĐEN) ĐỂ TEST TỐC ĐỘ THOẢI MÁI
+    /*
     if (currentPattern == 0b11111111) {
-        // Nếu trong 1.5 giây đầu mà cả 8 mắt đều đen -> Chắc chắn là BỐC ĐẦU nhấc cảm biến, không phải vạch đích!
-        if (millis() - launchStartTime < MIN_RACE_TIME_FOR_END_MS) {
-            currentCaseName = "WHEELIE_DROP";
-            // Giảm ga ngay lập tức xuống 35 PWM để trọng lực kéo mũi xe hạ xuống đường
-            move(35, 35);
-            fullBlackFrames = 0;
-            return;
-        }
-
         fullBlackFrames++;
         if (fullBlackFrames >= END_CONFIRM && !inFullBlack) {
             inFullBlack = true;
@@ -528,18 +473,19 @@ void lineFollowPID() {
         fullBlackFrames = 0;
         inFullBlack = false;
     }
+    */
     if (blackCount != 0)
         inGap = false;
 
     // Cua 90 độ
     if ((currentPattern & 0b00000001) && blackCount < 5) {
         currentCaseName = "TURN_RIGHT";
-        move(effectiveBase + TURN_OUT, effectiveBase - TURN_IN);
+        move(BASE + TURN_OUT, BASE - TURN_IN);
         return;
     }
     if ((currentPattern & 0b10000000) && blackCount < 5) {
         currentCaseName = "TURN_LEFT";
-        move(effectiveBase - TURN_IN, effectiveBase + TURN_OUT);
+        move(BASE - TURN_IN, BASE + TURN_OUT);
         return;
     }
 
@@ -552,14 +498,14 @@ void lineFollowPID() {
         }
         if (inGap && millis() - gapStart < GAP_STRAIGHT_MS) {
             currentCaseName = "GAP_STRAIGHT";
-            move(effectiveBase, effectiveBase);
+            move(BASE, BASE);
             return;
         }
         currentCaseName = "LOST_LINE";
         if (lastError > 0)
-            move(effectiveBase + BOOST, -effectiveBase);
+            move(BASE + BOOST, -BASE);
         else
-            move(-effectiveBase, effectiveBase + BOOST);
+            move(-BASE, BASE + BOOST);
         return;
     }
 
@@ -568,7 +514,7 @@ void lineFollowPID() {
     int error = (int)lastLinePos - SETPOINT;
     int adjust = (int)(error * KP) + (int)(KD * (error - lastError));
     lastError = error;
-    movePID(effectiveBase, adjust);
+    movePID(BASE, adjust);
 }
 
 // ================================================================
@@ -606,7 +552,6 @@ void handleBLECommand(String cmd) {
     if (cmd == "CAL") {
         runLine = false;
         raceRunning = false;
-        isLaunching = false;
         stopMotor();
         calibrated = false;
         calibrating = true;
@@ -666,32 +611,16 @@ void handleBLECommand(String cmd) {
         currentCaseName = "PID_FOLLOW";
         raceStartTime = esp_timer_get_time();
         raceRunning = true;
-        launchStartTime = millis();
-        isLaunching = true;
         bleSend("LOG:AUTO_START");
         return;
     }
     if (cmd == "MANUAL") {
         runLine = false;
         raceRunning = false;
-        isLaunching = false;
         stopMotor();
         currentModeName = "MANUAL";
         currentCaseName = "IDLE";
         bleSend("LOG:MODE_MANUAL");
-        return;
-    }
-    if (cmd.startsWith("LAUNCH:")) {
-        int s, r;
-        if (sscanf(cmd.c_str() + 7, "%d,%d", &s, &r) == 2) {
-            launchStartSpeed = constrain(s, 20, 255);
-            launchRampMs = constrain(r, 50, 2000);
-            char buf[48];
-            snprintf(buf, sizeof(buf), "LOG:LAUNCH_OK:%d,%d", launchStartSpeed, launchRampMs);
-            bleSend(buf);
-        } else {
-            bleSend("LOG:LAUNCH_ERR");
-        }
         return;
     }
 
@@ -729,7 +658,6 @@ class MyServerCallbacks : public BLEServerCallbacks {
         stopMotor();
         runLine = false;
         raceRunning = false;
-        isLaunching = false;
         BLEDevice::startAdvertising();
     }
 };
