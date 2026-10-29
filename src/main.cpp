@@ -330,14 +330,26 @@ int docSensor() {
 // ================================================================
 float KP = 0.04f, KD = 0.3f;
 int BASE = 150;
-// Cua góc vuông: bánh ngoài = BASE + TURN_OUT, bánh trong = BASE - TURN_IN
-int TURN_OUT = 70, TURN_IN = 90;
+// Cua góc vuông: bánh ngoài = TURN_OUT, bánh trong = TURN_IN (0 = phanh dừng xoay compa)
+int TURN_OUT = 140, TURN_IN = 0;
 const int BOOST = 20, BOOST_THRESHOLD = 150;
 
-// Đoạn nét đứt (00000000) và vạch kết thúc (11111111)
-#define GAP_STRAIGHT_MS 100
-#define GAP_MAX_COUNT 5
-#define GAP_ERR_MAX 1500
+// Trạng thái khóa cua góc vuông (Turn Latch)
+enum TurnState { TURN_NONE, TURN_LEFT_90, TURN_RIGHT_90 };
+TurnState turnState = TURN_NONE;
+unsigned long turnStartTime = 0;
+#define TURN_90_TIMEOUT_MS 600
+#define TURN_90_MIN_MS 35
+
+// Chống xoay vòng vô tận khi mất line (giới hạn 1.2s tìm line)
+#define LOST_LINE_TIMEOUT_MS 1200
+unsigned long lostStartTime = 0;
+bool inLost = false;
+
+// Đoạn nét đứt: sa bàn có 4 vạch đứt ở đoạn đầu
+#define GAP_STRAIGHT_MS 50
+#define GAP_MAX_COUNT 4
+#define GAP_ERR_MAX 600
 #define END_BLACK_COUNT 1
 #define END_CONFIRM 3
 int cnt = 0;
@@ -433,6 +445,8 @@ void sendStatus() {
 // Kết thúc line: phanh ghìm rồi thả trôi + chốt giờ hoàn thành
 void endLine() {
     uint64_t finishTime = esp_timer_get_time();
+    turnState = TURN_NONE;
+    inLost = false;
     tb6612_short_brake();
     vTaskDelay(pdMS_TO_TICKS(150));
     tb6612_coast();
@@ -471,23 +485,65 @@ void lineFollowPID() {
         fullBlackFrames = 0;
         inFullBlack = false;
     }
-    if (blackCount != 0)
+
+    if (blackCount != 0) {
         inGap = false;
+        inLost = false;
+        lostStartTime = 0;
+    }
 
-    // Cua 90 độ
-    if ((currentPattern & 0b00000001) && blackCount < 5) {
+    // 1. Khóa trạng thái cua góc vuông 90 độ (Turn Latch)
+    // Bánh trong = TURN_IN (0 = phanh dừng compa, không giật lùi)
+    // Bánh ngoài = TURN_OUT (140 = ghìm tốc độ, không bị văng lực ly tâm)
+    if (turnState == TURN_RIGHT_90) {
         currentCaseName = "TURN_RIGHT";
-        move(BASE + TURN_OUT, BASE - TURN_IN);
-        return;
-    }
-    if ((currentPattern & 0b10000000) && blackCount < 5) {
-        currentCaseName = "TURN_LEFT";
-        move(BASE - TURN_IN, BASE + TURN_OUT);
+        move(TURN_OUT, TURN_IN);
+        // Sau 35ms, khi mắt giữa (S3..S5) chạm vào line mới -> thoát cua trả về PID
+        if (millis() - turnStartTime > TURN_90_MIN_MS) {
+            if ((currentPattern & 0b00111100) != 0) {
+                turnState = TURN_NONE;
+            }
+        }
+        if (millis() - turnStartTime > TURN_90_TIMEOUT_MS) {
+            turnState = TURN_NONE;
+        }
         return;
     }
 
-    // Mất line
+    if (turnState == TURN_LEFT_90) {
+        currentCaseName = "TURN_LEFT";
+        move(TURN_IN, TURN_OUT);
+        // Sau 35ms, khi mắt giữa (S3..S5) chạm vào line mới -> thoát cua trả về PID
+        if (millis() - turnStartTime > TURN_90_MIN_MS) {
+            if ((currentPattern & 0b00111100) != 0) {
+                turnState = TURN_NONE;
+            }
+        }
+        if (millis() - turnStartTime > TURN_90_TIMEOUT_MS) {
+            turnState = TURN_NONE;
+        }
+        return;
+    }
+
+    // 2. Kích hoạt Cua 90 độ khi mắt rìa chạm vạch vuông góc
+    if ((currentPattern & 0b00000001) && blackCount >= 2 && blackCount < 7) {
+        turnState = TURN_RIGHT_90;
+        turnStartTime = millis();
+        currentCaseName = "TURN_RIGHT";
+        move(TURN_OUT, TURN_IN);
+        return;
+    }
+    if ((currentPattern & 0b10000000) && blackCount >= 2 && blackCount < 7) {
+        turnState = TURN_LEFT_90;
+        turnStartTime = millis();
+        currentCaseName = "TURN_LEFT";
+        move(TURN_IN, TURN_OUT);
+        return;
+    }
+
+    // 3. Mất line
     if (blackCount == 0) {
+        // Nét đứt: chỉ khi chưa hết 4 vạch đầu và sai số cực nhỏ (đi thẳng)
         if (!inGap && cnt < GAP_MAX_COUNT && abs(lastError) <= GAP_ERR_MAX) {
             inGap = true;
             gapStart = millis();
@@ -498,6 +554,23 @@ void lineFollowPID() {
             move(BASE, BASE);
             return;
         }
+
+        // Bắt đầu đếm thời gian mất line
+        if (!inLost) {
+            inLost = true;
+            lostStartTime = millis();
+        }
+
+        // Nếu mất line quá 1.2s -> Dừng an toàn để bảo vệ xe, không xoay mòng mòng vô tận
+        if (millis() - lostStartTime > LOST_LINE_TIMEOUT_MS) {
+            stopMotor();
+            runLine = false;
+            currentCaseName = "LOST_STOP";
+            bleSend("LOG:LOST_STOP");
+            return;
+        }
+
+        // Đang quay tìm lại line
         currentCaseName = "LOST_LINE";
         if (lastError > 0)
             move(BASE + BOOST, -BASE);
@@ -506,7 +579,7 @@ void lineFollowPID() {
         return;
     }
 
-    // PID
+    // 4. PID bám line
     currentCaseName = "PID_FOLLOW";
     int error = (int)lastLinePos - SETPOINT;
     int adjust = (int)(error * KP) + (int)(KD * (error - lastError));
@@ -541,6 +614,8 @@ void handleBLECommand(String cmd) {
     if (cmd == "CAL") {
         runLine = false;
         raceRunning = false;
+        turnState = TURN_NONE;
+        inLost = false;
         stopMotor();
         calibrated = false;
         calibrating = true;
@@ -550,6 +625,14 @@ void handleBLECommand(String cmd) {
         currentModeName = "CALIB";
         currentCaseName = "CALIBRATING";
         bleSend("LOG:CAL_START");
+        return;
+    }
+
+    if (cmd.startsWith("BASE:")) {
+        BASE = constrain(cmd.substring(5).toInt(), 0, 255);
+        char buf[30];
+        snprintf(buf, sizeof(buf), "LOG:BASE=%d", BASE);
+        bleSend(buf);
         return;
     }
 
@@ -569,7 +652,7 @@ void handleBLECommand(String cmd) {
         int o, i;
         if (sscanf(cmd.c_str() + 5, "%d,%d", &o, &i) == 2) {
             TURN_OUT = constrain(o, 0, 255);
-            TURN_IN = constrain(i, -255, 400);
+            TURN_IN = constrain(i, 0, 255);
             bleSend("LOG:TURN_OK");
         } else
             bleSend("LOG:TURN_ERR");
@@ -589,6 +672,8 @@ void handleBLECommand(String cmd) {
             return;
         }
         runLine = true;
+        turnState = TURN_NONE;
+        inLost = false;
         lastError = 0;
         lastLinePos = SETPOINT;
         cnt = 0;
@@ -606,6 +691,8 @@ void handleBLECommand(String cmd) {
     if (cmd == "MANUAL") {
         runLine = false;
         raceRunning = false;
+        turnState = TURN_NONE;
+        inLost = false;
         stopMotor();
         currentModeName = "MANUAL";
         currentCaseName = "IDLE";
@@ -622,8 +709,11 @@ void handleBLECommand(String cmd) {
             move(-speed_dk, speed_dk);
         else if (cmd == "RGT")
             move(speed_dk, -speed_dk);
-        else if (cmd == "STP")
+        else if (cmd == "STP") {
+            turnState = TURN_NONE;
+            inLost = false;
             stopMotor();
+        }
     }
 }
 
