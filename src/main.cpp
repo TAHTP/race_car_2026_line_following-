@@ -338,11 +338,11 @@ const int BOOST = 20, BOOST_THRESHOLD = 150;
 enum TurnState { TURN_NONE, TURN_LEFT_90, TURN_RIGHT_90 };
 TurnState turnState = TURN_NONE;
 unsigned long turnStartTime = 0;
-#define TURN_90_TIMEOUT_MS 350
+#define TURN_90_TIMEOUT_MS 800
 #define TURN_90_MIN_MS 40
 
-// Chống xoay vòng vô tận khi mất line
-#define LOST_LINE_TIMEOUT_MS 350
+// Chống xoay vòng vô tận khi mất line (cho phép 1.5s để xe quay lại bắt line)
+#define LOST_LINE_TIMEOUT_MS 1500
 unsigned long lostStartTime = 0;
 bool inLost = false;
 
@@ -488,15 +488,16 @@ void lineFollowPID() {
     if (blackCount != 0) {
         inGap = false;
         inLost = false;
+        lostStartTime = 0;
     }
 
     // 1. Trạng thái khóa Cua 90 độ (Turn Latch)
     if (turnState == TURN_RIGHT_90) {
         currentCaseName = "TURN_RIGHT";
         move(TURN_OUT, -TURN_IN);
-        // Sau tối thiểu 40ms, nếu 2 mắt giữa (S3 hoặc S4) bắt được line mới -> thoát cua trả về PID
+        // Sau tối thiểu 40ms, nếu các mắt giữa (S2..S5) bắt được line mới -> thoát cua trả về PID
         if (millis() - turnStartTime > TURN_90_MIN_MS) {
-            if ((currentPattern & 0b00011000) != 0) {
+            if ((currentPattern & 0b00111100) != 0) {
                 turnState = TURN_NONE;
             }
         }
@@ -509,9 +510,9 @@ void lineFollowPID() {
     if (turnState == TURN_LEFT_90) {
         currentCaseName = "TURN_LEFT";
         move(-TURN_IN, TURN_OUT);
-        // Sau tối thiểu 40ms, nếu 2 mắt giữa (S3 hoặc S4) bắt được line mới -> thoát cua trả về PID
+        // Sau tối thiểu 40ms, nếu các mắt giữa (S2..S5) bắt được line mới -> thoát cua trả về PID
         if (millis() - turnStartTime > TURN_90_MIN_MS) {
-            if ((currentPattern & 0b00011000) != 0) {
+            if ((currentPattern & 0b00111100) != 0) {
                 turnState = TURN_NONE;
             }
         }
@@ -521,15 +522,15 @@ void lineFollowPID() {
         return;
     }
 
-    // 2. Kích hoạt Cua 90 độ khi mắt biên chạm line
-    if ((currentPattern & 0b00000001) && blackCount <= 4) {
+    // 2. Kích hoạt Cua 90 độ khi mắt biên chạm line (nhận diện sớm cả 2 mắt ngoài)
+    if ((currentPattern & 0b00000011) && blackCount <= 6) {
         turnState = TURN_RIGHT_90;
         turnStartTime = millis();
         currentCaseName = "TURN_RIGHT";
         move(TURN_OUT, -TURN_IN);
         return;
     }
-    if ((currentPattern & 0b10000000) && blackCount <= 4) {
+    if ((currentPattern & 0b11000000) && blackCount <= 6) {
         turnState = TURN_LEFT_90;
         turnStartTime = millis();
         currentCaseName = "TURN_LEFT";
@@ -556,7 +557,7 @@ void lineFollowPID() {
             lostStartTime = millis();
         }
 
-        // Nếu mất line quá 350ms -> Dừng an toàn, tránh xoay vòng vô tận
+        // Nếu mất line quá 1.5 giây mà không tìm thấy vạch -> Dừng an toàn để bảo vệ xe
         if (millis() - lostStartTime > LOST_LINE_TIMEOUT_MS) {
             stopMotor();
             runLine = false;
@@ -565,13 +566,12 @@ void lineFollowPID() {
             return;
         }
 
-        // Tìm line ở tốc độ kiểm soát (< 350ms)
+        // Đang quay dứt khoát để tìm lại line (trong giới hạn thời gian 1.5s)
         currentCaseName = "LOST_LINE";
-        int searchSpd = constrain(BASE, 80, 130);
         if (lastError > 0)
-            move(searchSpd, -searchSpd);
+            move(BASE + BOOST, -BASE);
         else
-            move(-searchSpd, searchSpd);
+            move(-BASE, BASE + BOOST);
         return;
     }
 
