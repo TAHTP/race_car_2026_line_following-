@@ -339,7 +339,8 @@ const int BOOST = 20, BOOST_THRESHOLD = 150;
 #define GAP_MAX_COUNT 5
 #define GAP_ERR_MAX 1500
 #define END_BLACK_COUNT 1
-#define END_CONFIRM 3
+#define END_CONFIRM 15                     // Lọc chống nhiễu: 15 chu kỳ liên tiếp mới xác nhận vạch đích
+#define MIN_RACE_TIME_FOR_END_MS 1500      // Khóa an toàn 1.5s đầu: Không cho phép kích hoạt dừng xe do bốc đầu
 int cnt = 0;
 int cntDen = 0;
 bool inGap = false, inFullBlack = false;
@@ -372,19 +373,47 @@ volatile uint64_t raceStartTime = 0;
 volatile bool raceRunning = false;
 
 // Launch Control: Tăng tốc tuyến tính chống bốc đầu khi đề-pa
-int launchStartSpeed = 60;        // Tốc độ mồi lúc xuất phát
+int launchStartSpeed = 40;        // Tốc độ mồi lúc xuất phát (êm ái, bám đường)
 int launchRampMs = 250;           // Thời gian vuốt ga lên 100% BASE (mili-giây)
 volatile unsigned long launchStartTime = 0;
 volatile bool isLaunching = false;
 
 // ================================================================
-// 7. ĐIỀU KHIỂN ĐỘNG CƠ
+// 7. ĐIỀU KHIỂN ĐỘNG CƠ (KÈM BỘ LÀM MƯỢT GIA TỐC SLEW RATE LIMITER)
 // ================================================================
+#define MAX_ACCEL_STEP 8 // Giới hạn tăng tốc tối đa 8 PWM / chu kỳ (chống giật bốc đầu)
+
+static int currentL = 0;
+static int currentR = 0;
+
 void move(int left, int right) {
-    speed_run(constrain(left, -255, 255), constrain(right, -255, 255));
+    left = constrain(left, -255, 255);
+    right = constrain(right, -255, 255);
+
+    // Mượt gia tốc bánh trái (tăng ga êm, nhả ga phanh nhanh)
+    if (left > currentL + MAX_ACCEL_STEP)
+        currentL += MAX_ACCEL_STEP;
+    else if (left < currentL - (MAX_ACCEL_STEP * 2))
+        currentL -= (MAX_ACCEL_STEP * 2);
+    else
+        currentL = left;
+
+    // Mượt gia tốc bánh phải
+    if (right > currentR + MAX_ACCEL_STEP)
+        currentR += MAX_ACCEL_STEP;
+    else if (right < currentR - (MAX_ACCEL_STEP * 2))
+        currentR -= (MAX_ACCEL_STEP * 2);
+    else
+        currentR = right;
+
+    speed_run(currentL, currentR);
 }
 
-void stopMotor() { tb6612_coast(); }
+void stopMotor() {
+    currentL = 0;
+    currentR = 0;
+    tb6612_coast();
+}
 
 void movePID(int base, int adjust) {
     int L = base + adjust, R = base - adjust;
@@ -477,6 +506,15 @@ void lineFollowPID() {
     }
 
     if (currentPattern == 0b11111111) {
+        // Nếu trong 1.5 giây đầu mà cả 8 mắt đều đen -> Chắc chắn là BỐC ĐẦU nhấc cảm biến, không phải vạch đích!
+        if (millis() - launchStartTime < MIN_RACE_TIME_FOR_END_MS) {
+            currentCaseName = "WHEELIE_DROP";
+            // Giảm ga ngay lập tức xuống 35 PWM để trọng lực kéo mũi xe hạ xuống đường
+            move(35, 35);
+            fullBlackFrames = 0;
+            return;
+        }
+
         fullBlackFrames++;
         if (fullBlackFrames >= END_CONFIRM && !inFullBlack) {
             inFullBlack = true;
