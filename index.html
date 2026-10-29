@@ -403,7 +403,11 @@
       </div>
       <div class="form-group">
         <label>Base Speed</label>
-        <input type="number" id="inputBase" step="5" value="150">
+        <div style="display: flex; gap: 4px;">
+          <button type="button" id="btnBaseSub" class="btn" style="padding: 4px 8px; font-size: 0.8rem; background: #334155;">-10</button>
+          <input type="number" id="inputBase" step="5" value="150" style="flex: 1; min-width: 0;">
+          <button type="button" id="btnBaseAdd" class="btn" style="padding: 4px 8px; font-size: 0.8rem; background: #334155;">+10</button>
+        </div>
       </div>
     </div>
     <button id="btnSetPid" class="btn btn-primary" style="width: 100%; margin-bottom: 12px;">Cập Nhật PID</button>
@@ -411,11 +415,11 @@
     <!-- Turn 90 Settings -->
     <div class="grid-2">
       <div class="form-group">
-        <label>Turn Out (Bánh ngoài)</label>
-        <input type="number" id="inputTurnOut" step="5" value="70">
+        <label>Turn Out (Bánh ngoài tiến)</label>
+        <input type="number" id="inputTurnOut" step="5" value="150">
       </div>
       <div class="form-group">
-        <label>Turn In (Bánh trong)</label>
+        <label>Turn In (Bánh trong lùi)</label>
         <input type="number" id="inputTurnIn" step="5" value="90">
       </div>
     </div>
@@ -697,6 +701,20 @@
       const kd = document.getElementById('inputKd').value;
       const base = document.getElementById('inputBase').value;
       sendCommand(`PID:${kp},${kd},${base}`);
+    });
+
+    // Base Speed +/- 10 buttons
+    document.getElementById('btnBaseSub').addEventListener('click', () => {
+      const el = document.getElementById('inputBase');
+      let val = Math.max(0, parseInt(el.value || 150) - 10);
+      el.value = val;
+      sendCommand("BASE:" + val);
+    });
+    document.getElementById('btnBaseAdd').addEventListener('click', () => {
+      const el = document.getElementById('inputBase');
+      let val = Math.min(255, parseInt(el.value || 150) + 10);
+      el.value = val;
+      sendCommand("BASE:" + val);
     });
 
     // Turn 90 tuning
