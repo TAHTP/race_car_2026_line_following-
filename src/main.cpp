@@ -114,9 +114,9 @@ void speed_run(int left, int right) {
 #define QTR_ORDER {0, 1, 2, 3, 4, 5, 6, 7}
 #endif
 
-#define QTR_SETTLE_US 300 // chờ sau khi đổi kênh (tăng 500/800 nếu sáng đôi)
-#define QTR_DUMMY 3       // số lần đọc bỏ
-#define QTR_SAMPLES 4     // số lần đọc lấy trung bình
+#define QTR_SETTLE_US 80  // chờ sau khi đổi kênh (tối ưu tốc độ cao: 80us)
+#define QTR_DUMMY 1       // số lần đọc bỏ (1 lần để xả tụ ADC)
+#define QTR_SAMPLES 2     // số lần đọc lấy trung bình (2 mẫu lọc nhiễu nhanh)
 #define QTR_MIN_RANGE 200 // max-min tối thiểu để coi kênh đã calib tốt
 
 #define QTR_EEPROM_SIZE 64
