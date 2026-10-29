@@ -330,21 +330,9 @@ int docSensor() {
 // ================================================================
 float KP = 0.04f, KD = 0.3f;
 int BASE = 150;
-// Cua góc vuông Pivot Turn: bánh ngoài tiến = TURN_OUT, bánh trong lùi = -TURN_IN
-int TURN_OUT = 150, TURN_IN = 90;
+// Cua góc vuông: bánh ngoài = BASE + TURN_OUT, bánh trong = BASE - TURN_IN
+int TURN_OUT = 70, TURN_IN = 90;
 const int BOOST = 20, BOOST_THRESHOLD = 150;
-
-// Trạng thái khóa cua góc vuông (Turn Latch)
-enum TurnState { TURN_NONE, TURN_LEFT_90, TURN_RIGHT_90 };
-TurnState turnState = TURN_NONE;
-unsigned long turnStartTime = 0;
-#define TURN_90_TIMEOUT_MS 800
-#define TURN_90_MIN_MS 40
-
-// Chống xoay vòng vô tận khi mất line (cho phép 1.5s để xe quay lại bắt line)
-#define LOST_LINE_TIMEOUT_MS 1500
-unsigned long lostStartTime = 0;
-bool inLost = false;
 
 // Đoạn nét đứt (00000000) và vạch kết thúc (11111111)
 #define GAP_STRAIGHT_MS 100
@@ -435,8 +423,9 @@ void sendStatus() {
              "{\"mode\":\"%s\",\"case\":\"%s\","
              "\"pos\":%u,\"pat\":\"%s\","
              "\"spd\":%d,\"err\":%d,\"cal\":%d,\"time\":%.2f}",
-             currentModeName, currentCaseName, lastLinePos, patStr, speed_dk,
-             lastError, calibrating ? 2 : (calibrated ? 1 : 0), curLapTime);
+             currentModeName, currentCaseName, lastLinePos,
+             patStr, speed_dk, lastError,
+             calibrating ? 2 : (calibrated ? 1 : 0), curLapTime);
     pTxCharacteristic->setValue((uint8_t *)buf, strlen(buf));
     pTxCharacteristic->notify();
 }
@@ -444,8 +433,6 @@ void sendStatus() {
 // Kết thúc line: phanh ghìm rồi thả trôi + chốt giờ hoàn thành
 void endLine() {
     uint64_t finishTime = esp_timer_get_time();
-    turnState = TURN_NONE;
-    inLost = false;
     tb6612_short_brake();
     vTaskDelay(pdMS_TO_TICKS(150));
     tb6612_coast();
@@ -457,8 +444,7 @@ void endLine() {
         raceRunning = false;
         float elapsedSeconds = (float)(finishTime - raceStartTime) / 1000000.0f;
         char lapMsg[64];
-        snprintf(lapMsg, sizeof(lapMsg), "LOG:RACE_FINISH:%.3f",
-                 elapsedSeconds);
+        snprintf(lapMsg, sizeof(lapMsg), "LOG:RACE_FINISH:%.3f", elapsedSeconds);
         bleSend(lapMsg);
     } else {
         bleSend("LOG:END_LINE");
@@ -485,60 +471,22 @@ void lineFollowPID() {
         fullBlackFrames = 0;
         inFullBlack = false;
     }
-    if (blackCount != 0) {
+    if (blackCount != 0)
         inGap = false;
-        inLost = false;
-        lostStartTime = 0;
-    }
 
-    // 1. Trạng thái khóa Cua 90 độ (Turn Latch)
-    if (turnState == TURN_RIGHT_90) {
+    // Cua 90 độ
+    if ((currentPattern & 0b00000001) && blackCount < 5) {
         currentCaseName = "TURN_RIGHT";
-        move(TURN_OUT, -TURN_IN);
-        // Sau tối thiểu 40ms, nếu các mắt giữa (S2..S5) bắt được line mới -> thoát cua trả về PID
-        if (millis() - turnStartTime > TURN_90_MIN_MS) {
-            if ((currentPattern & 0b00111100) != 0) {
-                turnState = TURN_NONE;
-            }
-        }
-        if (millis() - turnStartTime > TURN_90_TIMEOUT_MS) {
-            turnState = TURN_NONE;
-        }
+        move(BASE + TURN_OUT, BASE - TURN_IN);
         return;
     }
-
-    if (turnState == TURN_LEFT_90) {
+    if ((currentPattern & 0b10000000) && blackCount < 5) {
         currentCaseName = "TURN_LEFT";
-        move(-TURN_IN, TURN_OUT);
-        // Sau tối thiểu 40ms, nếu các mắt giữa (S2..S5) bắt được line mới -> thoát cua trả về PID
-        if (millis() - turnStartTime > TURN_90_MIN_MS) {
-            if ((currentPattern & 0b00111100) != 0) {
-                turnState = TURN_NONE;
-            }
-        }
-        if (millis() - turnStartTime > TURN_90_TIMEOUT_MS) {
-            turnState = TURN_NONE;
-        }
+        move(BASE - TURN_IN, BASE + TURN_OUT);
         return;
     }
 
-    // 2. Kích hoạt Cua 90 độ khi mắt biên chạm line (nhận diện sớm cả 2 mắt ngoài)
-    if ((currentPattern & 0b00000011) && blackCount <= 6) {
-        turnState = TURN_RIGHT_90;
-        turnStartTime = millis();
-        currentCaseName = "TURN_RIGHT";
-        move(TURN_OUT, -TURN_IN);
-        return;
-    }
-    if ((currentPattern & 0b11000000) && blackCount <= 6) {
-        turnState = TURN_LEFT_90;
-        turnStartTime = millis();
-        currentCaseName = "TURN_LEFT";
-        move(-TURN_IN, TURN_OUT);
-        return;
-    }
-
-    // 3. Mất line
+    // Mất line
     if (blackCount == 0) {
         if (!inGap && cnt < GAP_MAX_COUNT && abs(lastError) <= GAP_ERR_MAX) {
             inGap = true;
@@ -550,23 +498,6 @@ void lineFollowPID() {
             move(BASE, BASE);
             return;
         }
-
-        // Bắt đầu đếm thời gian mất line
-        if (!inLost) {
-            inLost = true;
-            lostStartTime = millis();
-        }
-
-        // Nếu mất line quá 1.5 giây mà không tìm thấy vạch -> Dừng an toàn để bảo vệ xe
-        if (millis() - lostStartTime > LOST_LINE_TIMEOUT_MS) {
-            stopMotor();
-            runLine = false;
-            currentCaseName = "LOST_STOP";
-            bleSend("LOG:LOST_STOP");
-            return;
-        }
-
-        // Đang quay dứt khoát để tìm lại line (trong giới hạn thời gian 1.5s)
         currentCaseName = "LOST_LINE";
         if (lastError > 0)
             move(BASE + BOOST, -BASE);
@@ -575,7 +506,7 @@ void lineFollowPID() {
         return;
     }
 
-    // 4. PID bám line
+    // PID
     currentCaseName = "PID_FOLLOW";
     int error = (int)lastLinePos - SETPOINT;
     int adjust = (int)(error * KP) + (int)(KD * (error - lastError));
@@ -610,8 +541,6 @@ void handleBLECommand(String cmd) {
     if (cmd == "CAL") {
         runLine = false;
         raceRunning = false;
-        turnState = TURN_NONE;
-        inLost = false;
         stopMotor();
         calibrated = false;
         calibrating = true;
@@ -621,14 +550,6 @@ void handleBLECommand(String cmd) {
         currentModeName = "CALIB";
         currentCaseName = "CALIBRATING";
         bleSend("LOG:CAL_START");
-        return;
-    }
-
-    if (cmd.startsWith("BASE:")) {
-        BASE = constrain(cmd.substring(5).toInt(), 0, 255);
-        char buf[30];
-        snprintf(buf, sizeof(buf), "LOG:BASE=%d", BASE);
-        bleSend(buf);
         return;
     }
 
@@ -668,8 +589,6 @@ void handleBLECommand(String cmd) {
             return;
         }
         runLine = true;
-        turnState = TURN_NONE;
-        inLost = false;
         lastError = 0;
         lastLinePos = SETPOINT;
         cnt = 0;
@@ -687,8 +606,6 @@ void handleBLECommand(String cmd) {
     if (cmd == "MANUAL") {
         runLine = false;
         raceRunning = false;
-        turnState = TURN_NONE;
-        inLost = false;
         stopMotor();
         currentModeName = "MANUAL";
         currentCaseName = "IDLE";
@@ -705,11 +622,8 @@ void handleBLECommand(String cmd) {
             move(-speed_dk, speed_dk);
         else if (cmd == "RGT")
             move(speed_dk, -speed_dk);
-        else if (cmd == "STP") {
-            turnState = TURN_NONE;
-            inLost = false;
+        else if (cmd == "STP")
             stopMotor();
-        }
     }
 }
 
@@ -849,12 +763,26 @@ void setup() {
 
     // Khởi tạo FreeRTOS Task trên 2 Core độc lập:
     // Core 1: Ưu tiên cao nhất cho PID & Động cơ (tránh giật lag)
-    xTaskCreatePinnedToCore(taskMotorPID, "TaskMotorPID", 4096, NULL, 3, NULL,
-                            1);
+    xTaskCreatePinnedToCore(
+        taskMotorPID,
+        "TaskMotorPID",
+        4096,
+        NULL,
+        3,
+        NULL,
+        1
+    );
 
     // Core 0: Xử lý truyền nhận BLE & Telemetry
-    xTaskCreatePinnedToCore(taskBLETelemetry, "TaskBLETelemetry", 4096, NULL, 1,
-                            NULL, 0);
+    xTaskCreatePinnedToCore(
+        taskBLETelemetry,
+        "TaskBLETelemetry",
+        4096,
+        NULL,
+        1,
+        NULL,
+        0
+    );
 
     Serial.println(">> FreeRTOS Dual-Core Tasks Started! <<");
 }
@@ -862,4 +790,6 @@ void setup() {
 // ================================================================
 // 14. LOOP (Đã chuyển toàn bộ xử lý vào 2 Task FreeRTOS)
 // ================================================================
-void loop() { vTaskDelay(pdMS_TO_TICKS(1000)); }
+void loop() {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+}
