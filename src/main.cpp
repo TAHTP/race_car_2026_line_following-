@@ -347,7 +347,7 @@ int fullBlackFrames = 0;
 unsigned long gapStart = 0;
 
 // ================================================================
-// 6. TRẠNG THÁI & TIMER
+// 6. TRẠNG THÁI, TIMER & LAUNCH CONTROL
 // ================================================================
 bool runLine = false;
 #if DEBUG_RAW
@@ -370,6 +370,12 @@ unsigned long lastStatusTime = 0;
 // Hardware Timer bấm giờ vòng đua
 volatile uint64_t raceStartTime = 0;
 volatile bool raceRunning = false;
+
+// Launch Control: Tăng tốc tuyến tính chống bốc đầu khi đề-pa
+int launchStartSpeed = 60;        // Tốc độ mồi lúc xuất phát
+int launchRampMs = 250;           // Thời gian vuốt ga lên 100% BASE (mili-giây)
+volatile unsigned long launchStartTime = 0;
+volatile bool isLaunching = false;
 
 // ================================================================
 // 7. ĐIỀU KHIỂN ĐỘNG CƠ
@@ -437,6 +443,7 @@ void endLine() {
     vTaskDelay(pdMS_TO_TICKS(150));
     tb6612_coast();
     runLine = false;
+    isLaunching = false;
     currentModeName = "IDLE";
     currentCaseName = "END_LINE";
 
@@ -456,6 +463,18 @@ void endLine() {
 // ================================================================
 void lineFollowPID() {
     int blackCount = docSensor();
+
+    // Launch Control: Tăng tốc tuyến tính từ launchStartSpeed lên BASE trong launchRampMs
+    int effectiveBase = BASE;
+    if (isLaunching) {
+        unsigned long elapsed = millis() - launchStartTime;
+        if (elapsed < (unsigned long)launchRampMs) {
+            effectiveBase = launchStartSpeed + (int)(((long)(BASE - launchStartSpeed) * elapsed) / launchRampMs);
+        } else {
+            isLaunching = false;
+            effectiveBase = BASE;
+        }
+    }
 
     if (currentPattern == 0b11111111) {
         fullBlackFrames++;
@@ -477,12 +496,12 @@ void lineFollowPID() {
     // Cua 90 độ
     if ((currentPattern & 0b00000001) && blackCount < 5) {
         currentCaseName = "TURN_RIGHT";
-        move(BASE + TURN_OUT, BASE - TURN_IN);
+        move(effectiveBase + TURN_OUT, effectiveBase - TURN_IN);
         return;
     }
     if ((currentPattern & 0b10000000) && blackCount < 5) {
         currentCaseName = "TURN_LEFT";
-        move(BASE - TURN_IN, BASE + TURN_OUT);
+        move(effectiveBase - TURN_IN, effectiveBase + TURN_OUT);
         return;
     }
 
@@ -495,14 +514,14 @@ void lineFollowPID() {
         }
         if (inGap && millis() - gapStart < GAP_STRAIGHT_MS) {
             currentCaseName = "GAP_STRAIGHT";
-            move(BASE, BASE);
+            move(effectiveBase, effectiveBase);
             return;
         }
         currentCaseName = "LOST_LINE";
         if (lastError > 0)
-            move(BASE + BOOST, -BASE);
+            move(effectiveBase + BOOST, -effectiveBase);
         else
-            move(-BASE, BASE + BOOST);
+            move(-effectiveBase, effectiveBase + BOOST);
         return;
     }
 
@@ -511,7 +530,7 @@ void lineFollowPID() {
     int error = (int)lastLinePos - SETPOINT;
     int adjust = (int)(error * KP) + (int)(KD * (error - lastError));
     lastError = error;
-    movePID(BASE, adjust);
+    movePID(effectiveBase, adjust);
 }
 
 // ================================================================
@@ -541,6 +560,7 @@ void handleBLECommand(String cmd) {
     if (cmd == "CAL") {
         runLine = false;
         raceRunning = false;
+        isLaunching = false;
         stopMotor();
         calibrated = false;
         calibrating = true;
@@ -600,16 +620,32 @@ void handleBLECommand(String cmd) {
         currentCaseName = "PID_FOLLOW";
         raceStartTime = esp_timer_get_time();
         raceRunning = true;
+        launchStartTime = millis();
+        isLaunching = true;
         bleSend("LOG:AUTO_START");
         return;
     }
     if (cmd == "MANUAL") {
         runLine = false;
         raceRunning = false;
+        isLaunching = false;
         stopMotor();
         currentModeName = "MANUAL";
         currentCaseName = "IDLE";
         bleSend("LOG:MODE_MANUAL");
+        return;
+    }
+    if (cmd.startsWith("LAUNCH:")) {
+        int s, r;
+        if (sscanf(cmd.c_str() + 7, "%d,%d", &s, &r) == 2) {
+            launchStartSpeed = constrain(s, 20, 255);
+            launchRampMs = constrain(r, 50, 2000);
+            char buf[48];
+            snprintf(buf, sizeof(buf), "LOG:LAUNCH_OK:%d,%d", launchStartSpeed, launchRampMs);
+            bleSend(buf);
+        } else {
+            bleSend("LOG:LAUNCH_ERR");
+        }
         return;
     }
 
@@ -647,6 +683,7 @@ class MyServerCallbacks : public BLEServerCallbacks {
         stopMotor();
         runLine = false;
         raceRunning = false;
+        isLaunching = false;
         BLEDevice::startAdvertising();
     }
 };
