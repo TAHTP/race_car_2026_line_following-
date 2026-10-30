@@ -329,7 +329,12 @@ int docSensor() {
 // 5. PID & THAM SỐ
 // ================================================================
 float KP = 0.04f, KD = 0.3f;
-int BASE = 150;
+float START_KP = 0.04f, START_KD = 0.3f;
+int BASE = 100;
+int AUTO_START_SPEED = 150;
+unsigned long AUTO_START_HOLD_MS = 1000;
+const unsigned long AUTO_SPEED_RAMP_MS = 1000;
+unsigned long autoStartMs = 0;
 // Cua góc vuông: bánh ngoài = BASE + TURN_OUT, bánh trong = BASE - TURN_IN
 int TURN_OUT = 70, TURN_IN = 90;
 const int BOOST = 20, BOOST_THRESHOLD = 150;
@@ -338,7 +343,7 @@ const int BOOST = 20, BOOST_THRESHOLD = 150;
 #define GAP_STRAIGHT_MS 100
 #define GAP_MAX_COUNT 5
 #define GAP_ERR_MAX 1500
-#define END_BLACK_COUNT 1
+#define END_BLACK_COUNT 2 // Bỏ qua vạch full đen đầu tiên, dừng ở vạch tiếp theo
 #define END_CONFIRM 3
 int cnt = 0;
 int cntDen = 0;
@@ -350,6 +355,9 @@ unsigned long gapStart = 0;
 // 6. TRẠNG THÁI & TIMER
 // ================================================================
 bool runLine = false;
+bool autoStartPending = false;
+unsigned long autoRequestMs = 0;
+const unsigned long AUTO_START_DELAY_MS = 1000;
 #if DEBUG_RAW
 bool testMode = false;
 unsigned long lastRawTime = 0;
@@ -462,7 +470,7 @@ void updateButton() {
             unsigned long pressDuration = millis() - buttonPressStartTime;
             if (!longPressTriggered && pressDuration >= 40 && pressDuration < 1200) {
                 // Nhấn nhả bình thường (Click)
-                if (runLine) {
+                if (runLine || autoStartPending) {
                     // Xe đang chạy -> Dừng khẩn cấp
                     stopManual();
                 } else if (calibrating) {
@@ -494,6 +502,13 @@ void updateButton() {
 // 8. ĐIỀU KHIỂN ĐỘNG CƠ
 // ================================================================
 void move(int left, int right) {
+    // Giới hạn cả lệnh PD/BOOST/cua theo đà tăng tốc để tránh giật lúc đề-pa.
+    unsigned long elapsed = millis() - autoStartMs;
+    if (runLine && elapsed < AUTO_START_HOLD_MS) {
+        int limit = (long)AUTO_START_SPEED * elapsed / AUTO_START_HOLD_MS;
+        left = constrain(left, -limit, limit);
+        right = constrain(right, -limit, limit);
+    }
     speed_run(constrain(left, -255, 255), constrain(right, -255, 255));
 }
 
@@ -574,11 +589,25 @@ void endLine() {
 // ================================================================
 // 9. DÒ LINE BÁM PID
 // ================================================================
+int autoBaseSpeed() {
+    unsigned long elapsed = millis() - autoStartMs;
+    if (elapsed < AUTO_START_HOLD_MS)
+        return (long)AUTO_START_SPEED * elapsed / AUTO_START_HOLD_MS;
+    unsigned long rampElapsed = elapsed - AUTO_START_HOLD_MS;
+    if (rampElapsed >= AUTO_SPEED_RAMP_MS)
+        return BASE;
+    return AUTO_START_SPEED +
+           (long)(BASE - AUTO_START_SPEED) * (long)rampElapsed /
+               (long)AUTO_SPEED_RAMP_MS;
+}
+
 void lineFollowPID() {
     int blackCount = docSensor();
+    int base = autoBaseSpeed();
 
     if (currentPattern == 0b11111111) {
-        fullBlackFrames++;
+        if (fullBlackFrames < END_CONFIRM)
+            fullBlackFrames++;
         if (fullBlackFrames >= END_CONFIRM && !inFullBlack) {
             inFullBlack = true;
             cntDen++;
@@ -597,12 +626,12 @@ void lineFollowPID() {
     // Cua 90 độ
     if ((currentPattern & 0b00000001) && blackCount < 5) {
         currentCaseName = "TURN_RIGHT";
-        move(BASE + TURN_OUT, BASE - TURN_IN);
+        move(base + TURN_OUT, base - TURN_IN);
         return;
     }
     if ((currentPattern & 0b10000000) && blackCount < 5) {
         currentCaseName = "TURN_LEFT";
-        move(BASE - TURN_IN, BASE + TURN_OUT);
+        move(base - TURN_IN, base + TURN_OUT);
         return;
     }
 
@@ -615,29 +644,34 @@ void lineFollowPID() {
         }
         if (inGap && millis() - gapStart < GAP_STRAIGHT_MS) {
             currentCaseName = "GAP_STRAIGHT";
-            move(BASE, BASE);
+            move(base, base);
             return;
         }
         currentCaseName = "LOST_LINE";
         if (lastError > 0)
-            move(BASE + BOOST, -BASE);
+            move(base + BOOST, -base);
         else
-            move(-BASE, BASE + BOOST);
+            move(-base, base + BOOST);
         return;
     }
 
     // PID
     currentCaseName = "PID_FOLLOW";
     int error = (int)lastLinePos - SETPOINT;
-    int adjust = (int)(error * KP) + (int)(KD * (error - lastError));
+    bool starting = millis() - autoStartMs < AUTO_START_HOLD_MS;
+    float kp = starting ? START_KP : KP;
+    float kd = starting ? START_KD : KD;
+    currentCaseName = starting ? "START_PD" : "PID_FOLLOW";
+    int adjust = (int)(error * kp) + (int)(kd * (error - lastError));
     lastError = error;
-    movePID(BASE, adjust);
+    movePID(base, adjust);
 }
 
 // ================================================================
 // CÁC HÀM ĐIỀU KHIỂN CHẾ ĐỘ
 // ================================================================
 void startCalibration() {
+    autoStartPending = false;
     runLine = false;
     raceRunning = false;
     stopMotor();
@@ -654,12 +688,30 @@ void startCalibration() {
 }
 
 void startAuto() {
+    if (autoStartPending || runLine)
+        return;
+    if (!calibrated || calibrating) {
+        bleSend("LOG:NEED_CAL");
+        buzzerPlay(BUZZ_DOUBLE);
+        return;
+    }
+    stopMotor();
+    raceRunning = false;
+    currentModeName = "AUTO_WAIT";
+    currentCaseName = "START_DELAY";
+    autoRequestMs = millis();
+    autoStartPending = true;
+    bleSend("LOG:AUTO_WAIT");
+}
+
+void beginAuto() {
+    autoStartPending = false;
     if (!calibrated) {
         bleSend("LOG:NEED_CAL");
         buzzerPlay(BUZZ_DOUBLE);
         return;
     }
-    runLine = true;
+    runLine = false;
     lastError = 0;
     lastLinePos = SETPOINT;
     cnt = 0;
@@ -670,12 +722,15 @@ void startAuto() {
     currentModeName = "AUTO";
     currentCaseName = "PID_FOLLOW";
     raceStartTime = esp_timer_get_time();
+    autoStartMs = millis();
     raceRunning = true;
+    runLine = true;
     bleSend("LOG:AUTO_START");
     buzzerPlay(BUZZ_LONG);
 }
 
 void stopManual() {
+    autoStartPending = false;
     runLine = false;
     raceRunning = false;
     stopMotor();
@@ -714,6 +769,24 @@ void handleBLECommand(String cmd) {
         return;
     }
 
+    if (cmd.startsWith("STARTPID:")) {
+        float kp, kd, seconds;
+        int speed = AUTO_START_SPEED;
+        int fields = sscanf(cmd.c_str() + 9, "%f,%f,%f,%d", &kp, &kd, &seconds, &speed);
+        if (fields >= 3 &&
+            kp >= 0 && kp <= 10 && kd >= 0 && kd <= 10 &&
+            seconds >= 0.1f && seconds <= 60.0f && speed >= 0 && speed <= 255) {
+            START_KP = kp;
+            START_KD = kd;
+            AUTO_START_SPEED = speed;
+            AUTO_START_HOLD_MS = (unsigned long)(seconds * 10.0f + 0.5f) * 100;
+            bleSend("LOG:STARTPID_OK");
+        } else {
+            bleSend("LOG:STARTPID_ERR");
+        }
+        return;
+    }
+
     if (cmd.startsWith("PID:")) {
         float kp, kd;
         int base;
@@ -741,6 +814,10 @@ void handleBLECommand(String cmd) {
         snprintf(buf, sizeof(buf), "PID:%.4f,%.4f,%d,%d,%d", KP, KD, BASE,
                  TURN_OUT, TURN_IN);
         bleSend(buf);
+        snprintf(buf, sizeof(buf), "STARTPID:%.4f,%.4f,%.1f,%d",
+                 START_KP, START_KD, AUTO_START_HOLD_MS / 1000.0f,
+                 AUTO_START_SPEED);
+        bleSend(buf);
         return;
     }
 
@@ -754,6 +831,9 @@ void handleBLECommand(String cmd) {
     }
 
     if (!runLine) {
+        if (cmd == "FWD" || cmd == "BWD" || cmd == "LFT" ||
+            cmd == "RGT" || cmd == "STP")
+            autoStartPending = false;
         if (cmd == "FWD")
             move(speed_dk, speed_dk);
         else if (cmd == "BWD")
@@ -784,6 +864,7 @@ class MyServerCallbacks : public BLEServerCallbacks {
     }
     void onDisconnect(BLEServer *p) override {
         deviceConnected = false;
+        autoStartPending = false;
         stopMotor();
         runLine = false;
         raceRunning = false;
@@ -843,6 +924,9 @@ void taskMotorPID(void *pvParameters) {
 void taskBLETelemetry(void *pvParameters) {
     for (;;) {
         updateButton();
+        if (autoStartPending && !buttonPressedDebounced &&
+            millis() - autoRequestMs >= AUTO_START_DELAY_MS)
+            beginAuto();
         buzzerUpdate();
 
         if (!deviceConnected && oldDeviceConnected) {
