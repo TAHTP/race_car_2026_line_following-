@@ -392,18 +392,41 @@
     </div>
 
     <!-- PID Settings -->
+    <div class="card-title">Xuất phát</div>
+    <div class="grid-3">
+      <div class="form-group">
+        <label>KP xuất phát</label>
+        <input type="number" id="inputStartKp" min="0" max="10" step="any" value="0.04">
+      </div>
+      <div class="form-group">
+        <label>KD xuất phát</label>
+        <input type="number" id="inputStartKd" min="0" max="10" step="any" value="0.3">
+      </div>
+      <div class="form-group">
+        <label>Thời gian tăng tốc (giây)</label>
+        <input type="number" id="inputStartSeconds" min="0.1" max="60" step="any" value="1.0">
+      </div>
+      <div class="form-group">
+        <label>Tốc độ cuối tăng tốc (0–255)</label>
+        <input type="number" id="inputStartSpeed" min="0" max="255" step="1" value="150">
+      </div>
+    </div>
+    <p style="font-size: 0.8rem; color: var(--text-dim);">Tăng dần từ 0 lên tốc độ đã đặt trong thời gian trên, vẫn dùng PID xuất phát để bám line. Tăng thời gian nếu xe đề-pa còn gắt.</p>
+    <button id="btnSetStartPid" class="btn btn-primary" style="width: 100%; margin-bottom: 12px;">Cập Nhật PID, Tốc Độ & Thời Gian Xuất Phát</button>
+    <div class="card-title">Sau thời gian xuất phát</div>
+    <p style="font-size: 0.8rem; color: var(--text-dim);">Dùng PID bên dưới và chuyển dần từ tốc độ xuất phát về Base Speed trong 1 giây. Web tự lưu thông số trên trình duyệt này và gửi lại khi kết nối xe.</p>
     <div class="grid-3">
       <div class="form-group">
         <label>KP</label>
-        <input type="number" id="inputKp" step="0.005" value="0.04">
+        <input type="number" id="inputKp" step="any" value="0.04">
       </div>
       <div class="form-group">
         <label>KD</label>
-        <input type="number" id="inputKd" step="0.05" value="0.3">
+        <input type="number" id="inputKd" step="any" value="0.3">
       </div>
       <div class="form-group">
         <label>Base Speed</label>
-        <input type="number" id="inputBase" step="5" value="150">
+        <input type="number" id="inputBase" step="1" value="100">
       </div>
     </div>
     <button id="btnSetPid" class="btn btn-primary" style="width: 100%; margin-bottom: 12px;">Cập Nhật PID</button>
@@ -412,11 +435,11 @@
     <div class="grid-2">
       <div class="form-group">
         <label>Turn Out (Bánh ngoài)</label>
-        <input type="number" id="inputTurnOut" step="5" value="70">
+        <input type="number" id="inputTurnOut" step="1" value="70">
       </div>
       <div class="form-group">
         <label>Turn In (Bánh trong)</label>
-        <input type="number" id="inputTurnIn" step="5" value="90">
+        <input type="number" id="inputTurnIn" step="1" value="90">
       </div>
     </div>
     <button id="btnSetTurn" class="btn btn-primary" style="width: 100%;">Cập Nhật Tốc Độ Cua 90°</button>
@@ -457,6 +480,60 @@
       entry.textContent = `[${time}] ${msg}`;
       consoleLog.appendChild(entry);
       consoleLog.scrollTop = consoleLog.scrollHeight;
+    }
+
+    const SETTINGS_KEY = 'robot_tuning_v1';
+    const settingIds = ['inputStartKp', 'inputStartKd', 'inputStartSeconds',
+      'inputStartSpeed', 'inputKp', 'inputKd', 'inputBase',
+      'inputTurnOut', 'inputTurnIn', 'sliderSpeed'];
+    let hasSavedSettings = false;
+
+    function saveSettings() {
+      const settings = {};
+      for (const id of settingIds) {
+        const input = document.getElementById(id);
+        if (input.value === '' || !Number.isFinite(Number(input.value)) || !input.checkValidity()) return;
+        settings[id] = input.value;
+      }
+      try {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        hasSavedSettings = true;
+      } catch (err) {
+        log('Không lưu được thông số trên trình duyệt: ' + err);
+      }
+    }
+
+    function restoreSettings() {
+      try {
+        const settings = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+        if (!settings || typeof settings !== 'object') return;
+        for (const id of settingIds) {
+          const input = document.getElementById(id);
+          const value = settings[id];
+          if (typeof value !== 'string' || value === '' || !Number.isFinite(Number(value))) continue;
+          const previous = input.value;
+          input.value = value;
+          if (!input.checkValidity()) input.value = previous;
+        }
+        hasSavedSettings = true;
+        document.getElementById('txtSpeed').textContent = document.getElementById('sliderSpeed').value;
+      } catch (err) {
+        log('Không đọc được thông số đã lưu: ' + err);
+      }
+    }
+
+    async function applySavedSettings() {
+      if (!hasSavedSettings) return;
+      const value = id => document.getElementById(id).value;
+      await sendCommand(`STARTPID:${value('inputStartKp')},${value('inputStartKd')},${value('inputStartSeconds')},${value('inputStartSpeed')}`);
+      await sendCommand(`PID:${value('inputKp')},${value('inputKd')},${value('inputBase')}`);
+      await sendCommand(`TURN:${value('inputTurnOut')},${value('inputTurnIn')}`);
+      await sendCommand(`SPD:${value('sliderSpeed')}`);
+    }
+
+    restoreSettings();
+    for (const id of settingIds) {
+      document.getElementById(id).addEventListener('input', saveSettings);
     }
 
     async function sendCommand(cmd) {
@@ -504,6 +581,7 @@
         btnConnect.style.display = "none";
         btnDisconnect.style.display = "inline-flex";
         log("Kết nối thành công tới ROBOT_BLE!");
+        await applySavedSettings();
       } catch (err) {
         log("Lỗi kết nối: " + err);
       }
@@ -559,6 +637,16 @@
         } catch (e) {
           // ignore parse error
         }
+      } else if (text.startsWith("STARTPID:")) {
+        const parts = text.substring(9).split(',');
+        if (parts.length >= 3) {
+          document.getElementById('inputStartKp').value = parts[0];
+          document.getElementById('inputStartKd').value = parts[1];
+          document.getElementById('inputStartSeconds').value = parts[2];
+          if (parts.length >= 4) document.getElementById('inputStartSpeed').value = parts[3];
+          saveSettings();
+          log("Đã đọc PID xuất phát: " + text);
+        }
       } else if (text.startsWith("PID:")) {
         // PID:kp,kd,base,turn_out,turn_in
         const parts = text.substring(4).split(',');
@@ -568,6 +656,7 @@
           document.getElementById('inputBase').value = parts[2];
           document.getElementById('inputTurnOut').value = parts[3];
           document.getElementById('inputTurnIn').value = parts[4];
+          saveSettings();
           log("Đã cập nhật thông số từ robot: " + text);
         }
       } else if (text.startsWith("LOG:RACE_FINISH:")) {
@@ -692,6 +781,14 @@
     });
 
     // PID tuning
+    document.getElementById('btnSetStartPid').addEventListener('click', () => {
+      const inputs = ['inputStartKp', 'inputStartKd', 'inputStartSeconds', 'inputStartSpeed']
+        .map(id => document.getElementById(id));
+      if (!inputs.every(input => input.reportValidity() && input.value !== '')) return;
+      const [kp, kd, seconds, speed] = inputs.map(input => Number(input.value));
+      sendCommand(`STARTPID:${kp},${kd},${seconds},${speed}`);
+    });
+
     document.getElementById('btnSetPid').addEventListener('click', () => {
       const kp = document.getElementById('inputKp').value;
       const kd = document.getElementById('inputKd').value;
