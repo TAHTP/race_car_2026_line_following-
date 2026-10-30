@@ -372,10 +372,10 @@ volatile uint64_t raceStartTime = 0;
 volatile bool raceRunning = false;
 
 // ================================================================
-// 7. NÚT BẤM (GPIO 16) & CÒI BUZZER (GPIO 4)
+// 7. NÚT BẤM (GPIO 16) & CÒI BUZZER (GPIO 17)
 // ================================================================
 #define PIN_BUTTON 16
-#define PIN_BUZZER 4
+#define PIN_BUZZER 17
 
 enum BuzzerPattern {
     BUZZ_NONE,
