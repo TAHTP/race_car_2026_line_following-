@@ -372,10 +372,10 @@ volatile uint64_t raceStartTime = 0;
 volatile bool raceRunning = false;
 
 // ================================================================
-// 7. NÚT BẤM (GPIO 4) & CÒI BUZZER (GPIO 16)
+// 7. NÚT BẤM (GPIO 16) & CÒI BUZZER (GPIO 4)
 // ================================================================
-#define PIN_BUTTON 4
-#define PIN_BUZZER 16
+#define PIN_BUTTON 16
+#define PIN_BUZZER 4
 
 enum BuzzerPattern {
     BUZZ_NONE,
@@ -451,7 +451,7 @@ void updateButton() {
     if (raw != lastButtonRaw) {
         lastButtonRaw = raw;
         buttonChangeTime = millis();
-        Serial.printf("[BUTTON] Raw pin 4 state changed to: %d\n", raw);
+        Serial.printf("[BUTTON] Raw pin %d state changed to: %d\n", PIN_BUTTON, raw);
     }
 
     if (millis() - buttonChangeTime >= 40) { // 40ms debounce chống dội phím
@@ -899,8 +899,8 @@ void setup() {
 
     Serial.println("========================================");
     Serial.println("ROBOT LINE FOLLOWING ESP32 STARTED");
-    Serial.printf("[SETUP] GPIO 4 (Button) initial read: %d\n", digitalRead(PIN_BUTTON));
-    Serial.println("[SETUP] Testing Buzzer on GPIO 16 (HIGH for 150ms)...");
+    Serial.printf("[SETUP] GPIO %d (Button) initial read: %d\n", PIN_BUTTON, digitalRead(PIN_BUTTON));
+    Serial.printf("[SETUP] Testing Buzzer on GPIO %d (HIGH for 150ms)...\n", PIN_BUZZER);
     digitalWrite(PIN_BUZZER, HIGH);
     delay(150);
     digitalWrite(PIN_BUZZER, LOW);
