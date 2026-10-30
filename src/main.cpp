@@ -779,7 +779,7 @@ void handleBLECommand(String cmd) {
             START_KP = kp;
             START_KD = kd;
             AUTO_START_SPEED = speed;
-            AUTO_START_HOLD_MS = (unsigned long)(seconds * 10.0f + 0.5f) * 100;
+            AUTO_START_HOLD_MS = (unsigned long)(seconds * 1000.0f + 0.5f);
             bleSend("LOG:STARTPID_OK");
         } else {
             bleSend("LOG:STARTPID_ERR");
@@ -814,7 +814,7 @@ void handleBLECommand(String cmd) {
         snprintf(buf, sizeof(buf), "PID:%.4f,%.4f,%d,%d,%d", KP, KD, BASE,
                  TURN_OUT, TURN_IN);
         bleSend(buf);
-        snprintf(buf, sizeof(buf), "STARTPID:%.4f,%.4f,%.1f,%d",
+        snprintf(buf, sizeof(buf), "STARTPID:%.7g,%.7g,%.3f,%d",
                  START_KP, START_KD, AUTO_START_HOLD_MS / 1000.0f,
                  AUTO_START_SPEED);
         bleSend(buf);

@@ -396,15 +396,15 @@
     <div class="grid-3">
       <div class="form-group">
         <label>KP xuất phát</label>
-        <input type="number" id="inputStartKp" min="0" max="10" step="0.005" value="0.04">
+        <input type="number" id="inputStartKp" min="0" max="10" step="any" value="0.04">
       </div>
       <div class="form-group">
         <label>KD xuất phát</label>
-        <input type="number" id="inputStartKd" min="0" max="10" step="0.05" value="0.3">
+        <input type="number" id="inputStartKd" min="0" max="10" step="any" value="0.3">
       </div>
       <div class="form-group">
         <label>Thời gian tăng tốc (giây)</label>
-        <input type="number" id="inputStartSeconds" min="0.1" max="60" step="0.1" value="1.0">
+        <input type="number" id="inputStartSeconds" min="0.1" max="60" step="any" value="1.0">
       </div>
       <div class="form-group">
         <label>Tốc độ cuối tăng tốc (0–255)</label>
@@ -418,15 +418,15 @@
     <div class="grid-3">
       <div class="form-group">
         <label>KP</label>
-        <input type="number" id="inputKp" step="0.005" value="0.04">
+        <input type="number" id="inputKp" step="any" value="0.04">
       </div>
       <div class="form-group">
         <label>KD</label>
-        <input type="number" id="inputKd" step="0.05" value="0.3">
+        <input type="number" id="inputKd" step="any" value="0.3">
       </div>
       <div class="form-group">
         <label>Base Speed</label>
-        <input type="number" id="inputBase" step="5" value="100">
+        <input type="number" id="inputBase" step="1" value="100">
       </div>
     </div>
     <button id="btnSetPid" class="btn btn-primary" style="width: 100%; margin-bottom: 12px;">Cập Nhật PID</button>
@@ -435,11 +435,11 @@
     <div class="grid-2">
       <div class="form-group">
         <label>Turn Out (Bánh ngoài)</label>
-        <input type="number" id="inputTurnOut" step="5" value="70">
+        <input type="number" id="inputTurnOut" step="1" value="70">
       </div>
       <div class="form-group">
         <label>Turn In (Bánh trong)</label>
-        <input type="number" id="inputTurnIn" step="5" value="90">
+        <input type="number" id="inputTurnIn" step="1" value="90">
       </div>
     </div>
     <button id="btnSetTurn" class="btn btn-primary" style="width: 100%;">Cập Nhật Tốc Độ Cua 90°</button>
@@ -786,7 +786,7 @@
         .map(id => document.getElementById(id));
       if (!inputs.every(input => input.reportValidity() && input.value !== '')) return;
       const [kp, kd, seconds, speed] = inputs.map(input => Number(input.value));
-      sendCommand(`STARTPID:${kp},${kd},${seconds.toFixed(1)},${speed}`);
+      sendCommand(`STARTPID:${kp},${kd},${seconds},${speed}`);
     });
 
     document.getElementById('btnSetPid').addEventListener('click', () => {
