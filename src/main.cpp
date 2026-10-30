@@ -355,9 +355,6 @@ unsigned long gapStart = 0;
 // 6. TRẠNG THÁI & TIMER
 // ================================================================
 bool runLine = false;
-bool autoStartPending = false;
-unsigned long autoRequestMs = 0;
-const unsigned long AUTO_START_DELAY_MS = 1000;
 #if DEBUG_RAW
 bool testMode = false;
 unsigned long lastRawTime = 0;
@@ -470,7 +467,7 @@ void updateButton() {
             unsigned long pressDuration = millis() - buttonPressStartTime;
             if (!longPressTriggered && pressDuration >= 40 && pressDuration < 1200) {
                 // Nhấn nhả bình thường (Click)
-                if (runLine || autoStartPending) {
+                if (runLine) {
                     // Xe đang chạy -> Dừng khẩn cấp
                     stopManual();
                 } else if (calibrating) {
@@ -671,7 +668,6 @@ void lineFollowPID() {
 // CÁC HÀM ĐIỀU KHIỂN CHẾ ĐỘ
 // ================================================================
 void startCalibration() {
-    autoStartPending = false;
     runLine = false;
     raceRunning = false;
     stopMotor();
@@ -688,25 +684,9 @@ void startCalibration() {
 }
 
 void startAuto() {
-    if (autoStartPending || runLine)
+    if (runLine)
         return;
     if (!calibrated || calibrating) {
-        bleSend("LOG:NEED_CAL");
-        buzzerPlay(BUZZ_DOUBLE);
-        return;
-    }
-    stopMotor();
-    raceRunning = false;
-    currentModeName = "AUTO_WAIT";
-    currentCaseName = "START_DELAY";
-    autoRequestMs = millis();
-    autoStartPending = true;
-    bleSend("LOG:AUTO_WAIT");
-}
-
-void beginAuto() {
-    autoStartPending = false;
-    if (!calibrated) {
         bleSend("LOG:NEED_CAL");
         buzzerPlay(BUZZ_DOUBLE);
         return;
@@ -730,7 +710,6 @@ void beginAuto() {
 }
 
 void stopManual() {
-    autoStartPending = false;
     runLine = false;
     raceRunning = false;
     stopMotor();
@@ -831,9 +810,6 @@ void handleBLECommand(String cmd) {
     }
 
     if (!runLine) {
-        if (cmd == "FWD" || cmd == "BWD" || cmd == "LFT" ||
-            cmd == "RGT" || cmd == "STP")
-            autoStartPending = false;
         if (cmd == "FWD")
             move(speed_dk, speed_dk);
         else if (cmd == "BWD")
@@ -864,7 +840,6 @@ class MyServerCallbacks : public BLEServerCallbacks {
     }
     void onDisconnect(BLEServer *p) override {
         deviceConnected = false;
-        autoStartPending = false;
         stopMotor();
         runLine = false;
         raceRunning = false;
@@ -924,9 +899,6 @@ void taskMotorPID(void *pvParameters) {
 void taskBLETelemetry(void *pvParameters) {
     for (;;) {
         updateButton();
-        if (autoStartPending && !buttonPressedDebounced &&
-            millis() - autoRequestMs >= AUTO_START_DELAY_MS)
-            beginAuto();
         buzzerUpdate();
 
         if (!deviceConnected && oldDeviceConnected) {
