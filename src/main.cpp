@@ -372,130 +372,7 @@ volatile uint64_t raceStartTime = 0;
 volatile bool raceRunning = false;
 
 // ================================================================
-// 7. NÚT BẤM (GPIO 16) & CÒI BUZZER (GPIO 17)
-// ================================================================
-#define PIN_BUTTON 16
-#define PIN_BUZZER 17
-
-enum BuzzerPattern {
-    BUZZ_NONE,
-    BUZZ_SHORT,   // 1 bíp ngắn (100ms) - Bắt đầu Calib / Dừng xe
-    BUZZ_DOUBLE,  // 2 bíp (100ms ON, 80ms OFF, 120ms ON) - Hoàn thành Calib / Về đích
-    BUZZ_LONG     // 1 bíp dài (350ms) - Bắt đầu chạy AUTO
-};
-
-struct BuzzerStep {
-    uint8_t state;
-    uint16_t duration;
-};
-
-BuzzerStep buzzQueue[6];
-volatile uint8_t buzzQueueLen = 0;
-volatile uint8_t buzzQueueIdx = 0;
-volatile unsigned long buzzStepTimer = 0;
-
-void buzzerPlay(BuzzerPattern pat) {
-    Serial.printf("[BUZZER] buzzerPlay called with pattern: %d\n", (int)pat);
-    buzzQueueIdx = 0;
-    if (pat == BUZZ_SHORT) {
-        buzzQueue[0] = {1, 100};
-        buzzQueue[1] = {0, 0};
-        buzzQueueLen = 2;
-    } else if (pat == BUZZ_DOUBLE) {
-        buzzQueue[0] = {1, 100};
-        buzzQueue[1] = {0, 80};
-        buzzQueue[2] = {1, 120};
-        buzzQueue[3] = {0, 0};
-        buzzQueueLen = 4;
-    } else if (pat == BUZZ_LONG) {
-        buzzQueue[0] = {1, 350};
-        buzzQueue[1] = {0, 0};
-        buzzQueueLen = 2;
-    } else {
-        buzzQueueLen = 0;
-        digitalWrite(PIN_BUZZER, LOW);
-        return;
-    }
-    digitalWrite(PIN_BUZZER, buzzQueue[0].state);
-    buzzStepTimer = millis();
-}
-
-void buzzerUpdate() {
-    if (buzzQueueIdx < buzzQueueLen) {
-        if (millis() - buzzStepTimer >= buzzQueue[buzzQueueIdx].duration) {
-            buzzQueueIdx = buzzQueueIdx + 1;
-            if (buzzQueueIdx < buzzQueueLen && buzzQueue[buzzQueueIdx].duration > 0) {
-                digitalWrite(PIN_BUZZER, buzzQueue[buzzQueueIdx].state);
-                buzzStepTimer = millis();
-            } else {
-                digitalWrite(PIN_BUZZER, LOW);
-            }
-        }
-    }
-}
-
-// Khai báo nguyên mẫu các hàm hành động
-void startCalibration();
-void startAuto();
-void stopManual();
-
-bool lastButtonRaw = HIGH;
-unsigned long buttonChangeTime = 0;
-bool buttonPressedDebounced = false;
-unsigned long buttonPressStartTime = 0;
-bool longPressTriggered = false;
-bool sessionCalibrated = false; // Lần đầu bật nguồn bấm nút sẽ ưu tiên Calibrate
-
-void updateButton() {
-    bool raw = digitalRead(PIN_BUTTON);
-    if (raw != lastButtonRaw) {
-        lastButtonRaw = raw;
-        buttonChangeTime = millis();
-        Serial.printf("[BUTTON] Raw pin %d state changed to: %d\n", PIN_BUTTON, raw);
-    }
-
-    if (millis() - buttonChangeTime >= 40) { // 40ms debounce chống dội phím
-        if (raw == LOW && !buttonPressedDebounced) {
-            buttonPressedDebounced = true;
-            buttonPressStartTime = millis();
-            longPressTriggered = false;
-            Serial.println("[BUTTON] Pressed down (LOW detected)!");
-        } else if (raw == HIGH && buttonPressedDebounced) {
-            buttonPressedDebounced = false;
-            unsigned long pressDuration = millis() - buttonPressStartTime;
-            Serial.printf("[BUTTON] Released (HIGH detected)! Duration: %lu ms\n", pressDuration);
-            if (!longPressTriggered && pressDuration >= 40 && pressDuration < 1200) {
-                // Nhấn nhả bình thường (Click)
-                if (runLine) {
-                    Serial.println("[BUTTON] Action -> STOP MANUAL");
-                    stopManual();
-                } else if (calibrating) {
-                    Serial.println("[BUTTON] Action -> Ignored (Calibrating in progress)");
-                } else {
-                    if (!sessionCalibrated) {
-                        Serial.println("[BUTTON] Action -> START CALIBRATION (1st press)");
-                        startCalibration();
-                    } else {
-                        Serial.println("[BUTTON] Action -> START AUTO (2nd press)");
-                        startAuto();
-                    }
-                }
-            }
-        } else if (raw == LOW && buttonPressedDebounced && !longPressTriggered) {
-            // Nhấn giữ > 1.5s để ép Calibrate lại từ đầu bất cứ lúc nào
-            if (millis() - buttonPressStartTime >= 1500) {
-                longPressTriggered = true;
-                Serial.println("[BUTTON] Action -> LONG PRESS (>1.5s): Force re-calibration!");
-                if (!runLine && !calibrating) {
-                    startCalibration();
-                }
-            }
-        }
-    }
-}
-
-// ================================================================
-// 8. ĐIỀU KHIỂN ĐỘNG CƠ
+// 7. ĐIỀU KHIỂN ĐỘNG CƠ
 // ================================================================
 void move(int left, int right) {
     speed_run(constrain(left, -255, 255), constrain(right, -255, 255));
@@ -569,7 +446,6 @@ void endLine() {
         char lapMsg[64];
         snprintf(lapMsg, sizeof(lapMsg), "LOG:RACE_FINISH:%.3f", elapsedSeconds);
         bleSend(lapMsg);
-        buzzerPlay(BUZZ_DOUBLE);
     } else {
         bleSend("LOG:END_LINE");
     }
@@ -639,57 +515,6 @@ void lineFollowPID() {
 }
 
 // ================================================================
-// CÁC HÀM ĐIỀU KHIỂN CHẾ ĐỘ
-// ================================================================
-void startCalibration() {
-    runLine = false;
-    raceRunning = false;
-    stopMotor();
-    calibrated = false;
-    calibrating = true;
-    calEnd = millis() + CAL_TIME;
-    qtr.resetCalibration();
-    currentPattern = 0;
-    currentModeName = "CALIB";
-    currentCaseName = "CALIBRATING";
-    sessionCalibrated = true;
-    bleSend("LOG:CAL_START");
-    buzzerPlay(BUZZ_SHORT);
-}
-
-void startAuto() {
-    if (!calibrated) {
-        bleSend("LOG:NEED_CAL");
-        buzzerPlay(BUZZ_DOUBLE);
-        return;
-    }
-    runLine = true;
-    lastError = 0;
-    lastLinePos = SETPOINT;
-    cnt = 0;
-    cntDen = 0;
-    inGap = false;
-    fullBlackFrames = 0;
-    inFullBlack = false;
-    currentModeName = "AUTO";
-    currentCaseName = "PID_FOLLOW";
-    raceStartTime = esp_timer_get_time();
-    raceRunning = true;
-    bleSend("LOG:AUTO_START");
-    buzzerPlay(BUZZ_LONG);
-}
-
-void stopManual() {
-    runLine = false;
-    raceRunning = false;
-    stopMotor();
-    currentModeName = "MANUAL";
-    currentCaseName = "IDLE";
-    bleSend("LOG:MODE_MANUAL");
-    buzzerPlay(BUZZ_SHORT);
-}
-
-// ================================================================
 // 10. LỆNH BLE
 // ================================================================
 void handleBLECommand(String cmd) {
@@ -699,14 +524,6 @@ void handleBLECommand(String cmd) {
         speed_dk = constrain(cmd.substring(4).toInt(), 30, 255);
         char buf[30];
         snprintf(buf, sizeof(buf), "LOG:SPD=%d", speed_dk);
-        bleSend(buf);
-        return;
-    }
-
-    if (cmd.startsWith("BASE:")) {
-        BASE = constrain(cmd.substring(5).toInt(), 0, 255);
-        char buf[30];
-        snprintf(buf, sizeof(buf), "LOG:BASE=%d", BASE);
         bleSend(buf);
         return;
     }
@@ -722,7 +539,17 @@ void handleBLECommand(String cmd) {
 #endif
 
     if (cmd == "CAL") {
-        startCalibration();
+        runLine = false;
+        raceRunning = false;
+        stopMotor();
+        calibrated = false;
+        calibrating = true;
+        calEnd = millis() + CAL_TIME;
+        qtr.resetCalibration();
+        currentPattern = 0;
+        currentModeName = "CALIB";
+        currentCaseName = "CALIBRATING";
+        bleSend("LOG:CAL_START");
         return;
     }
 
@@ -757,11 +584,32 @@ void handleBLECommand(String cmd) {
     }
 
     if (cmd == "AUTO") {
-        startAuto();
+        if (!calibrated) {
+            bleSend("LOG:NEED_CAL");
+            return;
+        }
+        runLine = true;
+        lastError = 0;
+        lastLinePos = SETPOINT;
+        cnt = 0;
+        cntDen = 0;
+        inGap = false;
+        fullBlackFrames = 0;
+        inFullBlack = false;
+        currentModeName = "AUTO";
+        currentCaseName = "PID_FOLLOW";
+        raceStartTime = esp_timer_get_time();
+        raceRunning = true;
+        bleSend("LOG:AUTO_START");
         return;
     }
     if (cmd == "MANUAL") {
-        stopManual();
+        runLine = false;
+        raceRunning = false;
+        stopMotor();
+        currentModeName = "MANUAL";
+        currentCaseName = "IDLE";
+        bleSend("LOG:MODE_MANUAL");
         return;
     }
 
@@ -830,9 +678,7 @@ void taskMotorPID(void *pvParameters) {
                 if (anyBad)
                     bleSend(bad);
                 qtr.saveCalibration();
-                sessionCalibrated = true;
                 bleSend("LOG:CAL_DONE");
-                buzzerPlay(BUZZ_DOUBLE);
             }
             vTaskDelay(pdMS_TO_TICKS(1));
             continue;
@@ -851,12 +697,9 @@ void taskMotorPID(void *pvParameters) {
     }
 }
 
-// TASK 2 (Core 0): Chuyên giao tiếp Bluetooth BLE, Quét nút bấm & Còi Buzzer
+// TASK 2 (Core 0): Chuyên giao tiếp Bluetooth BLE & Telemetry
 void taskBLETelemetry(void *pvParameters) {
     for (;;) {
-        updateButton();
-        buzzerUpdate();
-
         if (!deviceConnected && oldDeviceConnected) {
             vTaskDelay(pdMS_TO_TICKS(300));
             BLEDevice::startAdvertising();
@@ -881,7 +724,7 @@ void taskBLETelemetry(void *pvParameters) {
 #endif
 
         sendStatus();
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
@@ -891,22 +734,6 @@ void taskBLETelemetry(void *pvParameters) {
 void setup() {
     Serial.begin(115200);
     tb6612_init();
-
-    // Khởi tạo Chân Nút bấm (GPIO 4) và Còi Buzzer (GPIO 16)
-    pinMode(PIN_BUTTON, INPUT_PULLUP);
-    pinMode(PIN_BUZZER, OUTPUT);
-    digitalWrite(PIN_BUZZER, LOW);
-
-    Serial.println("========================================");
-    Serial.println("ROBOT LINE FOLLOWING ESP32 STARTED");
-    Serial.printf("[SETUP] GPIO %d (Button) initial read: %d\n", PIN_BUTTON, digitalRead(PIN_BUTTON));
-    Serial.printf("[SETUP] Testing Buzzer on GPIO %d (HIGH for 150ms)...\n", PIN_BUZZER);
-    digitalWrite(PIN_BUZZER, HIGH);
-    delay(150);
-    digitalWrite(PIN_BUZZER, LOW);
-    Serial.println("========================================");
-
-    buzzerPlay(BUZZ_SHORT); // Bíp 1 tiếng ngắn khi khởi động xong
 
     BLEDevice::init("ROBOT_BLE");
     pServer = BLEDevice::createServer();
