@@ -395,6 +395,7 @@ volatile uint8_t buzzQueueIdx = 0;
 volatile unsigned long buzzStepTimer = 0;
 
 void buzzerPlay(BuzzerPattern pat) {
+    Serial.printf("[BUZZER] buzzerPlay called with pattern: %d\n", (int)pat);
     buzzQueueIdx = 0;
     if (pat == BUZZ_SHORT) {
         buzzQueue[0] = {1, 100};
@@ -450,6 +451,7 @@ void updateButton() {
     if (raw != lastButtonRaw) {
         lastButtonRaw = raw;
         buttonChangeTime = millis();
+        Serial.printf("[BUTTON] Raw pin 4 state changed to: %d\n", raw);
     }
 
     if (millis() - buttonChangeTime >= 40) { // 40ms debounce chống dội phím
@@ -457,23 +459,24 @@ void updateButton() {
             buttonPressedDebounced = true;
             buttonPressStartTime = millis();
             longPressTriggered = false;
+            Serial.println("[BUTTON] Pressed down (LOW detected)!");
         } else if (raw == HIGH && buttonPressedDebounced) {
             buttonPressedDebounced = false;
             unsigned long pressDuration = millis() - buttonPressStartTime;
+            Serial.printf("[BUTTON] Released (HIGH detected)! Duration: %lu ms\n", pressDuration);
             if (!longPressTriggered && pressDuration >= 40 && pressDuration < 1200) {
                 // Nhấn nhả bình thường (Click)
                 if (runLine) {
-                    // Xe đang chạy -> Dừng khẩn cấp
+                    Serial.println("[BUTTON] Action -> STOP MANUAL");
                     stopManual();
                 } else if (calibrating) {
-                    // Xe đang calib -> Bỏ qua
+                    Serial.println("[BUTTON] Action -> Ignored (Calibrating in progress)");
                 } else {
-                    // Xe đang dừng
                     if (!sessionCalibrated) {
-                        // Lần 1: Bắt đầu Calibrate
+                        Serial.println("[BUTTON] Action -> START CALIBRATION (1st press)");
                         startCalibration();
                     } else {
-                        // Lần 2 (hoặc sau khi đã calib): Chạy AUTO
+                        Serial.println("[BUTTON] Action -> START AUTO (2nd press)");
                         startAuto();
                     }
                 }
@@ -482,6 +485,7 @@ void updateButton() {
             // Nhấn giữ > 1.5s để ép Calibrate lại từ đầu bất cứ lúc nào
             if (millis() - buttonPressStartTime >= 1500) {
                 longPressTriggered = true;
+                Serial.println("[BUTTON] Action -> LONG PRESS (>1.5s): Force re-calibration!");
                 if (!runLine && !calibrating) {
                     startCalibration();
                 }
@@ -892,6 +896,16 @@ void setup() {
     pinMode(PIN_BUTTON, INPUT_PULLUP);
     pinMode(PIN_BUZZER, OUTPUT);
     digitalWrite(PIN_BUZZER, LOW);
+
+    Serial.println("========================================");
+    Serial.println("ROBOT LINE FOLLOWING ESP32 STARTED");
+    Serial.printf("[SETUP] GPIO 4 (Button) initial read: %d\n", digitalRead(PIN_BUTTON));
+    Serial.println("[SETUP] Testing Buzzer on GPIO 16 (HIGH for 150ms)...");
+    digitalWrite(PIN_BUZZER, HIGH);
+    delay(150);
+    digitalWrite(PIN_BUZZER, LOW);
+    Serial.println("========================================");
+
     buzzerPlay(BUZZ_SHORT); // Bíp 1 tiếng ngắn khi khởi động xong
 
     BLEDevice::init("ROBOT_BLE");
